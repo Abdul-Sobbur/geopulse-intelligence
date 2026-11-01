@@ -4,6 +4,7 @@ Run from the backend folder:  uvicorn app.main:app --reload
 Interactive docs:             http://127.0.0.1:8000/docs
 """
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -17,6 +18,14 @@ app = FastAPI(
         "All outputs are preliminary screening information, not engineering "
         "certification or regulatory advice."
     ),
+)
+
+# Allow our local frontend (Vite dev server) to call the API from the browser
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
 )
 
 
@@ -94,3 +103,36 @@ def assets(
     """)
     with engine.connect() as conn:
         return conn.execute(sql, params).scalar()
+
+
+@app.get("/pilots/{pilot_id}/districts", tags=["geography"])
+def pilot_districts(pilot_id: str):
+    """Return a pilot's districts as GeoJSON, with a bounding box for zooming."""
+    sql = text("""
+        WITH sel AS (
+            SELECT b.pcode, b.name, b.parent_name, b.geom
+            FROM admin_boundaries b
+            JOIN pilot_districts p USING (pcode)
+            WHERE p.pilot_id = :pid
+        )
+        SELECT json_build_object(
+            'type', 'FeatureCollection',
+            'bbox', json_build_array(
+                ST_XMin(ST_Extent(geom)), ST_YMin(ST_Extent(geom)),
+                ST_XMax(ST_Extent(geom)), ST_YMax(ST_Extent(geom))
+            ),
+            'features', COALESCE(json_agg(json_build_object(
+                'type', 'Feature',
+                'geometry', ST_AsGeoJSON(geom, 5)::json,
+                'properties', json_build_object(
+                    'pcode', pcode, 'name', name, 'region', parent_name
+                )
+            )), '[]'::json)
+        )
+        FROM sel
+    """)
+    with engine.connect() as conn:
+        result = conn.execute(sql, {"pid": pilot_id}).scalar()
+    if not result["features"]:
+        raise HTTPException(status_code=404, detail=f"Unknown pilot: {pilot_id}")
+    return result
