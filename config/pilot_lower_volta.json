@@ -8,6 +8,10 @@
     "GH0608", "GH0624", "GH0726", "GH0705",
     "GH0706", "GH1416", "GH1407", "GH1418"
   ],
+  "sources": {
+    "osm_pbf": "data/raw/osm/ghana-261031.osm.pbf",
+    "osm_snapshot_date": "2026-10-31"
+  },
   "known_gaps": [
     "Anlo district was affected by the 2023 spillage but is outside this pilot extent."
   ]
