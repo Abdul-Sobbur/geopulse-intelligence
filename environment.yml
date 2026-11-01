@@ -13,4 +13,5 @@ dependencies:
   - python=3.12
   - psycopg
   - geoalchemy2
+  - python-dotenv
 prefix: C:\Users\hp\miniforge3\envs\geopulse

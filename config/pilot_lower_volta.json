@@ -1,0 +1,14 @@
+{
+  "pilot_id": "lower_volta",
+  "name": "Lower Volta corridor",
+  "description": "Riparian districts from Akosombo to the Ada estuary",
+  "admin_level": 2,
+  "boundary_source": "D-01",
+  "district_pcodes": [
+    "GH0608", "GH0624", "GH0726", "GH0705",
+    "GH0706", "GH1416", "GH1407", "GH1418"
+  ],
+  "known_gaps": [
+    "Anlo district was affected by the 2023 spillage but is outside this pilot extent."
+  ]
+}
