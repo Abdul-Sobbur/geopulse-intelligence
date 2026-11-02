@@ -1,7 +1,7 @@
 # GeoPulse Intelligence — Data Inventory
 
 **Pilot:** Lower Volta corridor, Ghana (Akosombo → Ada estuary)
-**Status:** Draft v0.2 (1 Nov 2026). D-01 and D-02 downloaded and inspected; other rows are desk-checked only. Fields marked *(confirm on download)* must be filled in from the actual files.
+**Status:** Draft v0.3 (2 Nov 2026). D-01, D-02, D-04, D-07 and D-08 downloaded or produced and inspected; D-05 used via Earth Engine; D-06 desk-checked only. Fields marked *(confirm on download)* must be filled in from the actual files.
 **Rule:** No dataset enters PostGIS until its row below is complete.
 
 ---
@@ -32,7 +32,7 @@ Eight riparian districts, defined by official P-codes from D-01 (see `config/pil
 | D-01 | Ghana Subnational Administrative Boundaries (COD-AB), admin 0–2 | Ghana Statistical Service; published by OCHA/HDX | data.humdata.org/dataset/cod-ab-gha — file `ghana_admin_boundaries.shp.zip`, layer `gha_admin2.shp` (standard, not `_em`); acquired 2026-11-01 | CC BY-IGO 3.0 *(re-confirm on HDX page — dataset was recently republished)* | See `valid_on` / `version` fields | Admin level 2 = 260 districts; 0 invalid geometries | EPSG:4326 (confirmed) | Pilot extent; geography IDs (P-codes) for national scaling. Loaded to PostGIS table `admin_boundaries` |
 | D-02 | OpenStreetMap Ghana extract (roads, waterways, water bodies, places, POIs) | OpenStreetMap contributors via Geofabrik | download.geofabrik.de/africa/ghana — file `ghana-261031.osm.pbf` (~117 MB); acquired 2026-11-01 | ODbL 1.0 (attribution + share-alike for derived databases) | Snapshot 2026-10-31 | Variable (crowd-sourced) | EPSG:4326 (confirmed) | Asset inventory (M1), proximity targets (M3) |
 | D-03 | OSM power infrastructure (plants, substations, high-voltage lines) | OpenStreetMap contributors (from D-02 or Overpass) | As D-02 | ODbL 1.0 | As D-02 | Variable | EPSG:4326 | Energy assets — **public, already-mapped features only**, screening-level detail |
-| D-04 | GRID3 Ghana Settlement Extents v3 | GRID3 / CIESIN, Columbia University | grid3.org / HDX | *(confirm in release notes)* | Imagery mostly 2019–2020+; v3 published 2024 | Settlement polygons | *(confirm on download)* | Settlements for exposure and proximity |
+| D-04 | GRID3 GHA Settlement Extents v3.0 | GRID3 / CIESIN, Columbia University | HDX dataset "GRID3 GHA - Settlement Extents v3.0" — file `grid3_gha_settlement_extents_v3_0.zip`, layer `GRID3_GHA_Settlement_Extents_v3_0` (GeoPackage, 228,980 polygons nationally); acquired 2026-11-02 | **To confirm from the release notes.** Other countries' v3 releases are CC BY-SA 4.0; treat as attribution + share-alike until confirmed | `date` field = 2024 | Settlement polygons (generalised, ~100 m); types: Built-up Area, Small Settlement Area, Hamlet; per-polygon building count, building area and probability | EPSG:4326 (confirmed) | Settlement footprints for exposure screening. Loaded to PostGIS table `settlements` (4,705 polygons whose interior point lies in the pilot; 0 invalid geometries) |
 | D-05 | Copernicus DEM GLO-30 (release 2024_1) | ESA / Copernicus (© DLR, Airbus) | Earth Engine `COPERNICUS/DEM/GLO30_2024_1` (supersedes `COPERNICUS/DEM/GLO30`) | Copernicus WorldDEM-30 free licence; attribution notice required | Acquired 2011–2015 | 30 m | EPSG:4326 | Terrain/elevation context (M2, M6) |
 | D-06 | ESA WorldCover 10 m 2021 (v200) | ESA WorldCover consortium | Earth Engine `ESA/WorldCover/v200` | CC BY 4.0 | 2021 | 10 m | EPSG:4326 | Land-cover context (M2, M6) |
 | D-07 | Sentinel-1 GRD (SAR), IW mode, VV | ESA / Copernicus (Sentinel-1A only in 2023) | Earth Engine `COPERNICUS/S1_GRD`, project `ee-aasobbur`; scene list from `scripts/s1_scene_inventory.py` | Copernicus Sentinel data — free and open *(record exact terms)* | Two ascending tracks (rel. orbits 74 and 147), each covering ~65–69% of the pilot. Pre-event: 5 scenes per track, 19 Jul – 10 Sep 2023. Flood: track 147 on 2023-10-16, track 74 on 2023-10-23 | 10 m | EPSG:4326 | Input to D-08 |
@@ -72,9 +72,23 @@ Sentinel-1 coverage: 100% of every pilot district (two tracks combined).
 
 Interpretation: observed new water is best reported as a **range of ~38–78 km²**. The lower bound counts only attributable flooding; the upper bound adds new water in places that historically held water at least 10% of the time (JRC GSW occurrence). In Ada West the ambiguous class is dominated by the Songor lagoon / salt-pan area; along the Tongu floodplain much of the ambiguous class may be genuine event flooding on ground that has flooded before. Both bounds are likely under-estimates (radar misses water under vegetation and among buildings).
 
+### D-04 settlement screening against D-08 (run 2026-11-02, near = 250 m)
+
+| Settlement type | In pilot | Footprint intersects attributable flood | Intersects ambiguous water | Near (≤250 m) |
+|---|---|---|---|---|
+| Hamlet | 4,155 | 92 | 12 | 366 |
+| Small Settlement Area | 534 | 67 | 5 | 82 |
+| Built-up Area | 16 | 6 | 0 | 5 |
+| **Total** | **4,705** | **165** | **17** | **453** |
+
+By district, settlements intersecting attributable flood: North Tongu 42, South Tongu 25, Ada East 23, Shai Osudoku 22, Asuogyaman 21, Central Tongu 18, Ada West 12, Lower Manya 2. No intersecting settlement has GRID3 probability < 0.5.
+
+Interpretation: the **count of settlements intersecting observed water** is the meaningful figure. Flooded area *inside* settlements (≈0.7 km²) is an under-estimate because radar misses water among buildings. Buildings in intersecting settlements (≈84,700) is an upper-bound context figure only, dominated by six built-up areas, and must never be reported as "buildings flooded".
+
 ### Required attribution strings
 - **D-01:** Ghana Statistical Service, via OCHA HDX (CC BY-IGO).
 - **D-02/D-03:** © OpenStreetMap contributors (ODbL).
+- **D-04:** Center for International Earth Science Information Network (CIESIN), Columbia University. 2024. GRID3 GHA - Settlement Extents v3.0. New York: GRID3.
 - **D-05:** "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved" *(verify exact wording against licence before publishing)*.
 - **D-06:** © ESA WorldCover project / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium.
 - **D-07/D-08:** Contains modified Copernicus Sentinel data (2023).
