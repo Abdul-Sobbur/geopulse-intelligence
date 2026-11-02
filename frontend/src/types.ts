@@ -1,0 +1,166 @@
+// Shared data types for the GeoPulse frontend
+
+export type Bounds = [number, number, number, number];
+
+// GeoJSON coordinates nest to any depth: [x, y], [[x, y], ...], [[[x, y], ...]], ...
+export type NestedCoords = number[] | NestedCoords[];
+
+export type Geometry = { type: string; coordinates: NestedCoords };
+
+export type AssetProperties = {
+  asset_id: number;
+  asset_type: string;
+  category: string;
+  label: string;
+  subtype: string | null;
+  name: string | null;
+  adm2_pcode: string | null;
+  source_id: string;
+  source_ref: string;
+  source_date: string;
+};
+
+export type DistrictProperties = { pcode: string; name: string; region: string };
+
+export type Feature<P = AssetProperties> = { type: "Feature"; id?: number; geometry: Geometry; properties: P };
+
+export type FeatureCollection<P = AssetProperties> = {
+  type: "FeatureCollection";
+  features: Feature<P>[];
+  bbox?: Bounds;
+};
+
+export type Workspace = "assets" | "flood" | "nearby" | "compare" | "dashboard" | "reports";
+
+export type AssetType = {
+  asset_type: string;
+  category: string;
+  label: string;
+  coverage_warning: string | null;
+  count: number;
+};
+
+export type District = { pcode: string; name: string; region: string; bounds: Bounds };
+
+export type HazardLayer = {
+  hazard_id: string;
+  title: string;
+  source_id: string;
+  observed_dates: string | null;
+  method: string | null;
+  pre_event_window: string[] | null;
+  limitations: string[] | null;
+};
+
+export type ScreeningAsset = {
+  asset_id: number;
+  asset_type: string;
+  category: string;
+  status: string;
+  distance_m: number | null;
+  flooded_length_m: number | null;
+};
+
+export type ScreeningResponse = { hazard_id: string; near_m: number; assets: ScreeningAsset[] };
+
+export type SettlementScreening = {
+  settlement_id: number;
+  adm2_pcode: string | null;
+  settlement_type: string;
+  building_count: number | null;
+  status: string;
+  distance_m: number | null;
+  flooded_m2: number | null;
+};
+
+export type SettlementScreeningResponse = { settlements: SettlementScreening[] };
+
+export type SummaryRow = { asset_type: string; total: number; in_flood: number; in_ambiguous: number; near: number };
+
+export type ExposureCounts = { in_flood: number; in_ambiguous: number; near: number };
+
+export type ProximityFeature = {
+  kind: "asset" | "settlement";
+  id: number;
+  type: string;
+  label: string;
+  category: string;
+  name: string | null;
+  adm2_pcode: string | null;
+  building_count: number | null;
+  distance_m: number;
+  lon: number;
+  lat: number;
+};
+
+export type ProximitySummary = { kind: string; type: string; label: string; count: number; buildings: number | null };
+
+export type ProximityResponse = {
+  center: [number, number];
+  radius_m: number;
+  district: { pcode: string; name: string } | null;
+  hazard: { hazard_id: string; flooded_m2: number; ambiguous_m2: number } | null;
+  total: number;
+  summary: ProximitySummary[];
+  features: ProximityFeature[];
+};
+
+export type PickTarget = "proximity" | "site";
+
+export type CandidateSite = { id: string; lon: number; lat: number };
+
+export type SiteCriterion = { id: string; label: string; unit: string; group: string; note: string };
+
+export type ComparisonResponse = {
+  radius_m: number;
+  criteria: SiteCriterion[];
+  sites: { lon: number; lat: number; values: Record<string, string | number | null> }[];
+  rasters: { dem: boolean; landcover: boolean };
+  note: string;
+};
+
+export type MetricDefinition = {
+  id: string;
+  label: string;
+  unit: string;
+  kind: string;
+  definition: string;
+  source: string;
+};
+
+export type DashboardDistrict = {
+  pcode: string;
+  name: string;
+  region: string;
+  area_km2: number;
+  assets: number;
+  assets_flagged: number;
+  settlements: number;
+  buildings: number;
+  settlements_in_flood: number;
+  settlements_ambiguous_or_near: number;
+  flooded_km2: number | null;
+  ambiguous_km2: number | null;
+};
+
+export type DashboardAssetType = {
+  asset_type: string;
+  label: string;
+  category: string;
+  coverage_warning: string | null;
+  total: number;
+  in_flood: number;
+  in_ambiguous: number;
+  near: number;
+};
+
+export type DashboardResponse = {
+  scope: { pcode: string | null; name: string };
+  near_m: number;
+  hazard: { hazard_id: string; title: string; observed_dates: string };
+  kpis: { id: string; value: number | null }[];
+  districts: DashboardDistrict[];
+  asset_types: DashboardAssetType[];
+  definitions: MetricDefinition[];
+  note: string;
+};

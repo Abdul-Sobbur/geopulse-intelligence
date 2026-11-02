@@ -222,3 +222,5 @@ __marimo__/
 # Project data (large and/or licensed — never committed)
 data/raw/
 data/processed/
+# Frontend helper code (the Python 'lib/' rule above would hide it)
+!frontend/src/lib/
