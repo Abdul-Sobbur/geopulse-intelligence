@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import type {
   ExpressionSpecification,
@@ -137,6 +137,42 @@ type ProximityResponse = {
 };
 
 const RADIUS_OPTIONS = [250, 500, 1000, 2000, 5000];
+
+type PickTarget = "proximity" | "site";
+
+type CandidateSite = { id: string; lon: number; lat: number };
+
+type SiteCriterion = { id: string; label: string; unit: string; group: string; note: string };
+
+type ComparisonResponse = {
+  radius_m: number;
+  criteria: SiteCriterion[];
+  sites: { lon: number; lat: number; values: Record<string, string | number | null> }[];
+  rasters: { dem: boolean; landcover: boolean };
+  note: string;
+};
+
+const SITE_LETTERS = ["A", "B", "C", "D"];
+const SITE_RADIUS_OPTIONS = [250, 500, 1000, 2000, 5000];
+
+function formatCriterion(value: string | number | null | undefined, unit: string): string {
+  if (value === null || value === undefined || value === "") return "–";
+  if (typeof value === "string") return value;
+  switch (unit) {
+    case "m":
+      return value >= 1000 ? `${(value / 1000).toFixed(1)} km` : `${Math.round(value)} m`;
+    case "m_asl":
+      return `${Math.round(value)} m`;
+    case "deg":
+      return `${value.toFixed(1)}°`;
+    case "ha":
+      return `${value.toFixed(1)} ha`;
+    case "count":
+      return Math.round(value).toLocaleString();
+    default:
+      return String(value);
+  }
+}
 
 function formatDistance(m: number): string {
   return m >= 1000 ? `${m / 1000} km` : `${m} m`;
@@ -322,7 +358,10 @@ export default function App() {
   const screeningRef = useRef(new Map<number, ScreeningAsset>());
   const settlementScreeningRef = useRef(new Map<number, SettlementScreening>());
   const pickModeRef = useRef(false);
+  const pickTargetRef = useRef<PickTarget>("proximity");
   const radiusRef = useRef(1000);
+  const sitesRef = useRef<CandidateSite[]>([]);
+  const siteMarkersRef = useRef(new Map<string, maplibregl.Marker>());
 
   const [assetTypes, setAssetTypes] = useState<AssetType[]>([]);
   const [assetsData, setAssetsData] = useState<FeatureCollection | null>(null);
@@ -343,6 +382,11 @@ export default function App() {
   const [radiusM, setRadiusM] = useState(1000);
   const [proximity, setProximity] = useState<ProximityResponse | null>(null);
   const [proximityLoading, setProximityLoading] = useState(false);
+  const [pickTarget, setPickTarget] = useState<PickTarget>("proximity");
+  const [sites, setSites] = useState<CandidateSite[]>([]);
+  const [siteRadius, setSiteRadius] = useState(1000);
+  const [comparison, setComparison] = useState<ComparisonResponse | null>(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
 
   function showPopup(lngLat: maplibregl.LngLatLike, properties: Record<string, unknown>) {
     const map = mapRef.current;
@@ -406,12 +450,83 @@ export default function App() {
     if (proximity) runProximity(proximity.center[0], proximity.center[1]);
   }
 
-  function togglePickMode() {
-    const next = !pickMode;
+  // Start or cancel "click the map" mode, for a proximity search or for adding a candidate site
+  function togglePickMode(target: PickTarget) {
+    const next = !(pickMode && pickTarget === target);
     pickModeRef.current = next;
+    pickTargetRef.current = target;
     setPickMode(next);
+    setPickTarget(target);
     const canvas = mapRef.current?.getCanvas();
     if (canvas) canvas.style.cursor = next ? "crosshair" : "";
+  }
+
+  function endPickMode() {
+    pickModeRef.current = false;
+    setPickMode(false);
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = "";
+  }
+
+  // Add a candidate site (A-D) where the map was clicked
+  function addSite(lon: number, lat: number) {
+    const map = mapRef.current;
+    endPickMode();
+    if (!map) return;
+    const used = new Set(sitesRef.current.map((s) => s.id));
+    const id = SITE_LETTERS.find((letter) => !used.has(letter));
+    if (!id) return;
+
+    const element = document.createElement("div");
+    element.className = "site-marker";
+    element.textContent = id;
+    siteMarkersRef.current.set(id, new maplibregl.Marker({ element }).setLngLat([lon, lat]).addTo(map));
+
+    const next = [...sitesRef.current, { id, lon, lat }].sort((a, b) => a.id.localeCompare(b.id));
+    sitesRef.current = next;
+    setSites(next);
+  }
+
+  function removeSite(id: string) {
+    siteMarkersRef.current.get(id)?.remove();
+    siteMarkersRef.current.delete(id);
+    const next = sitesRef.current.filter((s) => s.id !== id);
+    sitesRef.current = next;
+    setSites(next);
+  }
+
+  function clearSites() {
+    for (const marker of siteMarkersRef.current.values()) marker.remove();
+    siteMarkersRef.current.clear();
+    sitesRef.current = [];
+    setSites([]);
+  }
+
+  // Save the comparison table as CSV (built in the browser from what is on screen)
+  function downloadComparisonCsv() {
+    if (!comparison) return;
+    const quote = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const header = [
+      "criterion", "group", "unit", "note",
+      ...sites.map((s) => `site ${s.id} (${s.lat.toFixed(5)}, ${s.lon.toFixed(5)})`),
+    ];
+    const lines = [
+      `# GeoPulse Intelligence candidate site comparison, generated ${new Date().toISOString()}`,
+      `# Assessment radius ${comparison.radius_m} m. ${comparison.note}`,
+      header.map(quote).join(","),
+      ...comparison.criteria.map((c) =>
+        [c.label, c.group, c.unit, c.note, ...comparison.sites.map((s) => s.values[c.id] ?? "")]
+          .map(quote)
+          .join(","),
+      ),
+    ];
+    const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `geopulse_site_comparison_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   // Create the map and load data once
@@ -613,9 +728,22 @@ export default function App() {
           },
         });
 
-        // In "pick a point" mode, any click on the map runs a proximity search there
+        // Candidate site assessment circles
+        map.addSource("sites", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+        map.addLayer({
+          id: "sites-fill", type: "fill", source: "sites",
+          paint: { "fill-color": "#0f766e", "fill-opacity": 0.08 },
+        });
+        map.addLayer({
+          id: "sites-line", type: "line", source: "sites",
+          paint: { "line-color": "#0f766e", "line-width": 2, "line-dasharray": [1, 1.5] },
+        });
+
+        // In "pick a point" mode, a click on the map runs a proximity search or adds a site
         map.on("click", (e) => {
-          if (pickModeRef.current) runProximity(e.lngLat.lng, e.lngLat.lat);
+          if (!pickModeRef.current) return;
+          if (pickTargetRef.current === "site") addSite(e.lngLat.lng, e.lngLat.lat);
+          else runProximity(e.lngLat.lng, e.lngLat.lat);
         });
 
         setAssetTypes(typeList);
@@ -727,6 +855,44 @@ export default function App() {
       cancelled = true;
     };
   }, [screeningOn, nearM, mapReady]);
+
+  // Draw site circles and re-run the comparison whenever sites or the radius change
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const source = map.getSource("sites") as maplibregl.GeoJSONSource | undefined;
+    source?.setData({
+      type: "FeatureCollection",
+      features: sites.map((s) => ({
+        type: "Feature" as const,
+        properties: { id: s.id },
+        geometry: { type: "Polygon" as const, coordinates: [circleRing(s.lon, s.lat, siteRadius)] },
+      })),
+    });
+
+    if (sites.length === 0) {
+      setComparison(null);
+      return;
+    }
+
+    let cancelled = false;
+    const query = sites.map((s) => `site=${s.lon.toFixed(6)},${s.lat.toFixed(6)}`).join("&");
+    setComparisonLoading(true);
+    fetchJson(`${API_URL}/sites/compare?${query}&radius_m=${siteRadius}&hazard_id=${HAZARD_ID}`)
+      .then((data) => {
+        if (!cancelled) setComparison(data as ComparisonResponse);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setComparisonLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sites, siteRadius, mapReady]);
 
   // Asset counts for the current district selection
   const counts = useMemo(() => {
@@ -896,8 +1062,14 @@ export default function App() {
                 </select>
               </label>
 
-              <button type="button" className={`btn${pickMode ? " btn-active" : ""}`} onClick={togglePickMode}>
-                {pickMode ? "Click the map to choose a point (or cancel)" : "Pick a point on the map"}
+              <button
+                type="button"
+                className={`btn${pickMode && pickTarget === "proximity" ? " btn-active" : ""}`}
+                onClick={() => togglePickMode("proximity")}
+              >
+                {pickMode && pickTarget === "proximity"
+                  ? "Click the map to choose a point (or cancel)"
+                  : "Pick a point on the map"}
               </button>
 
               {proximityLoading && <p className="subtitle">Searching…</p>}
@@ -965,6 +1137,97 @@ export default function App() {
                   </p>
                   <button type="button" className="btn btn-secondary" onClick={clearProximity}>
                     Clear
+                  </button>
+                </>
+              )}
+            </section>
+
+            <section className="section">
+              <h2 className="section-title">Compare candidate sites</h2>
+
+              <label className="field inline">
+                <span>Assessment radius</span>
+                <select value={siteRadius} onChange={(e) => setSiteRadius(Number(e.target.value))}>
+                  {SITE_RADIUS_OPTIONS.map((m) => (
+                    <option key={m} value={m}>{formatDistance(m)}</option>
+                  ))}
+                </select>
+              </label>
+
+              <button
+                type="button"
+                className={`btn${pickMode && pickTarget === "site" ? " btn-active" : ""}`}
+                onClick={() => togglePickMode("site")}
+                disabled={sites.length >= SITE_LETTERS.length}
+              >
+                {sites.length >= SITE_LETTERS.length
+                  ? "Maximum of 4 sites"
+                  : pickMode && pickTarget === "site"
+                    ? "Click the map to place the site (or cancel)"
+                    : `Add site ${SITE_LETTERS.find((l) => !sites.some((s) => s.id === l))} (click the map)`}
+              </button>
+
+              {sites.length > 0 && (
+                <ul className="site-list">
+                  {sites.map((s) => (
+                    <li key={s.id}>
+                      <span className="site-badge">{s.id}</span>
+                      <span>{s.lat.toFixed(4)}, {s.lon.toFixed(4)}</span>
+                      <button type="button" className="link-button" onClick={() => removeSite(s.id)}>
+                        remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {comparisonLoading && <p className="subtitle">Comparing…</p>}
+
+              {comparison && !comparisonLoading && comparison.sites.length === sites.length && (
+                <>
+                  <div className="table-wrap">
+                    <table className="summary-table compare-table">
+                      <thead>
+                        <tr>
+                          <th>Criterion</th>
+                          {sites.map((s) => <th key={s.id}>{s.id}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {comparison.criteria.map((c, i) => (
+                          <Fragment key={c.id}>
+                            {(i === 0 || comparison.criteria[i - 1].group !== c.group) && (
+                              <tr className="group-row">
+                                <td colSpan={sites.length + 1}>{c.group}</td>
+                              </tr>
+                            )}
+                            <tr>
+                              <td title={c.note}>{c.label}</td>
+                              {comparison.sites.map((s, j) => (
+                                <td key={sites[j]?.id ?? j}>{formatCriterion(s.values[c.id], c.unit)}</td>
+                              ))}
+                            </tr>
+                          </Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {(!comparison.rasters.dem || !comparison.rasters.landcover) && (
+                    <p className="warning">
+                      Terrain and/or land cover unavailable: run scripts/download_site_rasters.py.
+                    </p>
+                  )}
+                  <p className="hint">
+                    Criteria are shown separately, with no score or ranking: whether a value is
+                    favourable depends on the project. Hover a criterion for its source. Distances are
+                    straight-line. Preliminary screening only.
+                  </p>
+                  <button type="button" className="btn btn-secondary" onClick={downloadComparisonCsv}>
+                    Download comparison (CSV)
+                  </button>
+                  <button type="button" className="btn btn-secondary" onClick={clearSites}>
+                    Clear all sites
                   </button>
                 </>
               )}

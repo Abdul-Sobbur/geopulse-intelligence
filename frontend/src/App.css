@@ -143,3 +143,35 @@
   display: block; box-sizing: border-box; text-align: center;
   text-decoration: none; margin-top: 6px;
 }
+
+/* ---- Site comparison ---- */
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.site-marker {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: #0f766e; color: #ffffff; border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  display: flex; align-items: center; justify-content: center;
+  font: 700 13px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.site-list { list-style: none; margin: 8px 0; padding: 0; font-size: 13px; }
+.site-list li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.site-badge {
+  width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+  background: #0f766e; color: #ffffff; font-size: 11px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.link-button {
+  all: unset; margin-left: auto; color: #1f78b4; cursor: pointer; font-size: 12px;
+}
+.link-button:hover { text-decoration: underline; }
+.link-button:focus-visible { outline: 2px solid #1f78b4; outline-offset: 2px; }
+
+.table-wrap { overflow-x: auto; margin: 6px 0; }
+.compare-table td:first-child { cursor: help; }
+.compare-table td { vertical-align: top; }
+.compare-table .group-row td {
+  text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: #616e7c; background: #f5f7fa; padding-top: 6px;
+}

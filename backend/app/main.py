@@ -7,10 +7,15 @@ import csv
 import html
 import io
 import json
+import math
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
+import numpy as np
+import rasterio
+from rasterio.windows import Window
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
@@ -21,7 +26,7 @@ from .db import engine
 
 app = FastAPI(
     title="GeoPulse Intelligence API",
-    version="0.3.0",
+    version="0.4.0",
     description=(
         "Spatial decision-support API. Pilot area: Lower Volta corridor, Ghana. "
         "All outputs are preliminary screening information, not engineering "
@@ -803,3 +808,221 @@ def screening_report(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{stem}.zip"'},
     )
+
+
+# ---------------------------------------------------------------- site comparison (Module 6)
+
+# Rasters written by scripts/download_site_rasters.py (backend/app/main.py -> project root)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+RASTER_DIR = PROJECT_ROOT / "data" / "processed" / "site_rasters"
+DEM_PATH = RASTER_DIR / "dem_glo30_pilot.tif"
+LANDCOVER_PATH = RASTER_DIR / "worldcover2021_pilot.tif"
+
+WORLDCOVER_CLASSES = {
+    10: "Tree cover", 20: "Shrubland", 30: "Grassland", 40: "Cropland", 50: "Built-up",
+    60: "Bare / sparse vegetation", 70: "Snow and ice", 80: "Permanent water",
+    90: "Herbaceous wetland", 95: "Mangroves", 100: "Moss and lichen",
+}
+
+# Criteria are shown separately; there is deliberately no composite score or ranking.
+SITE_CRITERIA = [
+    {"id": "district", "label": "District", "unit": "", "group": "Location",
+     "note": "District containing the site (COD-AB)."},
+    {"id": "elevation_m", "label": "Elevation at site", "unit": "m_asl", "group": "Terrain",
+     "note": "Copernicus DEM GLO-30, a surface model (includes trees and buildings)."},
+    {"id": "slope_mean_deg", "label": "Mean slope within radius", "unit": "deg", "group": "Terrain",
+     "note": "Derived from the DEM at about 30 m."},
+    {"id": "slope_max_deg", "label": "Maximum slope within radius", "unit": "deg", "group": "Terrain",
+     "note": "Derived from the DEM at about 30 m; sensitive to DEM noise."},
+    {"id": "landcover", "label": "Land cover within radius", "unit": "", "group": "Land cover",
+     "note": "ESA WorldCover 2021, resampled to about 20 m. Shares of classes covering at least 1%."},
+    {"id": "nearest_major_road_m", "label": "Nearest major road or bridge", "unit": "m", "group": "Access",
+     "note": "OpenStreetMap (motorway to tertiary); straight-line distance."},
+    {"id": "nearest_settlement_m", "label": "Nearest settlement footprint", "unit": "m", "group": "Communities",
+     "note": "GRID3 settlement extents."},
+    {"id": "settlements_within_radius", "label": "Settlements within radius", "unit": "count", "group": "Communities",
+     "note": "GRID3 footprints within the radius."},
+    {"id": "buildings_within_radius", "label": "Buildings in those settlements", "unit": "count",
+     "group": "Communities", "note": "Whole-settlement GRID3 building counts."},
+    {"id": "nearest_school_m", "label": "Nearest mapped school", "unit": "m", "group": "Services",
+     "note": "OpenStreetMap; completeness not verified."},
+    {"id": "nearest_health_m", "label": "Nearest mapped health facility", "unit": "m", "group": "Services",
+     "note": "OpenStreetMap; coverage in the pilot is sparse."},
+    {"id": "nearest_power_m", "label": "Nearest mapped power infrastructure", "unit": "m", "group": "Services",
+     "note": "OpenStreetMap power lines, substations and plants; coverage is sparse."},
+    {"id": "nearest_water_m", "label": "Nearest mapped river or water body", "unit": "m", "group": "Water",
+     "note": "OpenStreetMap waterways and water bodies."},
+    {"id": "nearest_flood_m", "label": "Nearest observed 2023 flooding", "unit": "m", "group": "Flood constraint",
+     "note": "Sentinel-1, 16 and 23 Oct 2023; likely an under-estimate of extent."},
+    {"id": "flood_within_radius_ha", "label": "Observed 2023 flooding within radius", "unit": "ha",
+     "group": "Flood constraint", "note": "Attributable class only."},
+    {"id": "ambiguous_within_radius_ha", "label": "Ambiguous seasonal water within radius", "unit": "ha",
+     "group": "Flood constraint", "note": "New water in recurrent seasonal water bodies."},
+]
+
+
+def _nearest_assets_sql(types_sql: str) -> str:
+    """Distance (m) from the point to the nearest asset of the given (fixed) types."""
+    return f"""(SELECT min(ST_Distance(k.geom::geography, {_POINT}::geography))
+               FROM (SELECT a.geom FROM assets a WHERE a.asset_type IN {types_sql}
+                     ORDER BY a.geom <-> {_POINT} LIMIT 5) k)"""
+
+
+def _hazard_area_sql(class_code: int) -> str:
+    """Hectares of a hazard class inside the circle around the point."""
+    buffer = f"ST_Buffer({_POINT}::geography, :r)::geometry"
+    return f"""(SELECT COALESCE(sum(ST_Area(ST_Intersection(f.geom, {buffer})::geography)), 0) / 10000.0
+               FROM hazard_features f
+               WHERE f.hazard_id = :hid AND f.class_code = {class_code}
+                 AND f.geom && ST_Expand({_POINT}, :deg) AND ST_Intersects(f.geom, {buffer}))"""
+
+
+SITE_SQL = text(f"""
+    SELECT
+        (SELECT b.pcode FROM admin_boundaries b WHERE ST_Contains(b.geom, {_POINT}) LIMIT 1) AS pcode,
+        (SELECT b.name FROM admin_boundaries b WHERE ST_Contains(b.geom, {_POINT}) LIMIT 1) AS district_name,
+        {_nearest_assets_sql("('road', 'bridge')")} AS nearest_major_road_m,
+        {_nearest_assets_sql("('education')")} AS nearest_school_m,
+        {_nearest_assets_sql("('health')")} AS nearest_health_m,
+        {_nearest_assets_sql("('power_line', 'power_substation', 'power_plant')")} AS nearest_power_m,
+        {_nearest_assets_sql("('waterway', 'water_body')")} AS nearest_water_m,
+        (SELECT min(ST_Distance(k.geom::geography, {_POINT}::geography))
+           FROM (SELECT s.geom FROM settlements s ORDER BY s.geom <-> {_POINT} LIMIT 5) k) AS nearest_settlement_m,
+        (SELECT count(*) FROM settlements s
+           WHERE s.geom && ST_Expand({_POINT}, :deg)
+             AND ST_DWithin(s.geom::geography, {_POINT}::geography, :r)) AS settlements_within_radius,
+        (SELECT COALESCE(sum(s.building_count), 0) FROM settlements s
+           WHERE s.geom && ST_Expand({_POINT}, :deg)
+             AND ST_DWithin(s.geom::geography, {_POINT}::geography, :r)) AS buildings_within_radius,
+        (SELECT min(ST_Distance(k.geom::geography, {_POINT}::geography))
+           FROM (SELECT f.geom FROM hazard_features f
+                 WHERE f.hazard_id = :hid AND f.class_code = 1
+                 ORDER BY f.geom <-> {_POINT} LIMIT 5) k) AS nearest_flood_m,
+        {_hazard_area_sql(1)} AS flood_within_radius_ha,
+        {_hazard_area_sql(5)} AS ambiguous_within_radius_ha
+""")
+
+
+def _circle_window(src, lon: float, lat: float, radius_m: float):
+    """Read the raster window around a point and a mask of pixels whose centres lie within the radius."""
+    m_lat = 110_574.0
+    m_lon = 111_320.0 * math.cos(math.radians(lat))
+    half_w, half_h = radius_m / m_lon, radius_m / m_lat
+    r0, c0 = src.index(lon - half_w, lat + half_h)
+    r1, c1 = src.index(lon + half_w, lat - half_h)
+    r0, c0 = max(r0, 0), max(c0, 0)
+    r1, c1 = min(r1, src.height - 1), min(c1, src.width - 1)
+    if r1 < r0 or c1 < c0:
+        return None  # the circle lies outside the raster
+    data = src.read(1, window=Window(c0, r0, c1 - c0 + 1, r1 - r0 + 1), masked=True)
+    rows, cols = np.mgrid[r0:r1 + 1, c0:c1 + 1]
+    t = src.transform
+    xs = t.c + (cols + 0.5) * t.a
+    ys = t.f + (rows + 0.5) * t.e
+    inside = ((xs - lon) * m_lon) ** 2 + ((ys - lat) * m_lat) ** 2 <= radius_m ** 2
+    pixel_size_m = (abs(t.a) * m_lon, abs(t.e) * m_lat)
+    return data, inside, pixel_size_m, (r0, c0)
+
+
+def _terrain(lon: float, lat: float, radius_m: float) -> dict:
+    """Elevation at the point and slope statistics within the radius, from the local DEM."""
+    empty = {"elevation_m": None, "slope_mean_deg": None, "slope_max_deg": None}
+    if not DEM_PATH.exists():
+        return empty
+    with rasterio.open(DEM_PATH) as src:
+        window = _circle_window(src, lon, lat, radius_m)
+        if window is None:
+            return empty
+        data, inside, (px_m, py_m), (r0, c0) = window
+        z = data.astype("float64").filled(np.nan)
+        row, col = src.index(lon, lat)
+
+    result = dict(empty)
+    if 0 <= row - r0 < z.shape[0] and 0 <= col - c0 < z.shape[1] and not np.isnan(z[row - r0, col - c0]):
+        result["elevation_m"] = round(float(z[row - r0, col - c0]), 1)
+    if z.shape[0] >= 2 and z.shape[1] >= 2:
+        gy, gx = np.gradient(z, py_m, px_m)
+        slope = np.degrees(np.arctan(np.hypot(gx, gy)))
+        values = slope[inside & ~np.isnan(slope)]
+        if values.size:
+            result["slope_mean_deg"] = round(float(values.mean()), 1)
+            result["slope_max_deg"] = round(float(values.max()), 1)
+    return result
+
+
+def _landcover(lon: float, lat: float, radius_m: float) -> str | None:
+    """Land-cover class shares within the radius, e.g. 'Cropland 45% · Tree cover 30%'."""
+    if not LANDCOVER_PATH.exists():
+        return None
+    with rasterio.open(LANDCOVER_PATH) as src:
+        window = _circle_window(src, lon, lat, radius_m)
+    if window is None:
+        return None
+    data, inside, _, _ = window
+    values = np.asarray(data.filled(0))[inside]
+    values = values[values > 0]
+    if values.size == 0:
+        return None
+    classes, counts = np.unique(values, return_counts=True)
+    shares = sorted(
+        ((WORLDCOVER_CLASSES.get(int(k), f"class {int(k)}"), c / values.size) for k, c in zip(classes, counts)),
+        key=lambda item: -item[1],
+    )
+    return " · ".join(f"{name} {round(100 * share)}%" for name, share in shares if share >= 0.01)
+
+
+def _round_site_value(key: str, value):
+    if value is None:
+        return None
+    if key.endswith("_m"):
+        return round(float(value))
+    if key.endswith("_ha"):
+        return round(float(value), 2)
+    if key in ("settlements_within_radius", "buildings_within_radius"):
+        return int(value)
+    return value
+
+
+@app.get("/sites/compare", tags=["site comparison"])
+def compare_sites(
+    site: list[str] = Query(..., description="One to four sites as 'lon,lat', e.g. site=0.47,6.0&site=0.3,6.1"),
+    radius_m: float = Query(1000, ge=100, le=5000, description="Assessment radius around each site, in metres"),
+    hazard_id: str = Query("flood_2023_observed", description="Hazard layer used as the flood constraint"),
+):
+    """Compare candidate sites on separately displayed criteria (no composite score or ranking)."""
+    if not 1 <= len(site) <= 4:
+        raise HTTPException(status_code=422, detail="Provide between 1 and 4 sites.")
+    points = []
+    for s in site:
+        try:
+            lon_text, lat_text = s.split(",")
+            lon, lat = float(lon_text), float(lat_text)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid site '{s}': expected 'lon,lat'.")
+        if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+            raise HTTPException(status_code=422, detail=f"Site '{s}' is outside valid coordinates.")
+        points.append((lon, lat))
+
+    results = []
+    with engine.connect() as conn:
+        for lon, lat in points:
+            params = {"lon": lon, "lat": lat, "r": radius_m, "deg": radius_m / 111_000 * 1.5, "hid": hazard_id}
+            row = dict(conn.execute(SITE_SQL, params).mappings().first())
+            values = {k: _round_site_value(k, v) for k, v in row.items() if k not in ("pcode", "district_name")}
+            values["district"] = (
+                f"{row['district_name']} ({row['pcode']})" if row["district_name"] else "Outside mapped districts"
+            )
+            values.update(_terrain(lon, lat, radius_m))
+            values["landcover"] = _landcover(lon, lat, radius_m)
+            results.append({"lon": lon, "lat": lat, "values": values})
+
+    return {
+        "radius_m": radius_m,
+        "hazard_id": hazard_id,
+        "criteria": SITE_CRITERIA,
+        "sites": results,
+        "rasters": {"dem": DEM_PATH.exists(), "landcover": LANDCOVER_PATH.exists()},
+        "note": "Criteria are shown separately. No composite score or ranking is calculated: whether a "
+                "value is favourable depends on the project. Preliminary screening only; distances are "
+                "straight-line.",
+    }
