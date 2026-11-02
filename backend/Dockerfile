@@ -5,6 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     RASTER_DIR=/app/site_rasters
 
+# System library that rasterio needs at runtime (missing from the slim base image)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .
