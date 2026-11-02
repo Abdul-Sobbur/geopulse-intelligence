@@ -348,6 +348,263 @@ function settlementPopupHtml(
     </div>`;
 }
 
+type MetricDefinition = {
+  id: string;
+  label: string;
+  unit: string;
+  kind: string;
+  definition: string;
+  source: string;
+};
+
+type DashboardDistrict = {
+  pcode: string;
+  name: string;
+  region: string;
+  area_km2: number;
+  assets: number;
+  assets_flagged: number;
+  settlements: number;
+  buildings: number;
+  settlements_in_flood: number;
+  settlements_ambiguous_or_near: number;
+  flooded_km2: number | null;
+  ambiguous_km2: number | null;
+};
+
+type DashboardAssetType = {
+  asset_type: string;
+  label: string;
+  category: string;
+  coverage_warning: string | null;
+  total: number;
+  in_flood: number;
+  in_ambiguous: number;
+  near: number;
+};
+
+type DashboardResponse = {
+  scope: { pcode: string | null; name: string };
+  near_m: number;
+  hazard: { hazard_id: string; title: string; observed_dates: string };
+  kpis: { id: string; value: number | null }[];
+  districts: DashboardDistrict[];
+  asset_types: DashboardAssetType[];
+  definitions: MetricDefinition[];
+  note: string;
+};
+
+function formatMetric(value: number | null | undefined, unit: string): string {
+  if (value === null || value === undefined) return "–";
+  if (unit === "km²") return `${value.toFixed(1)} km²`;
+  return Math.round(value).toLocaleString();
+}
+
+type BarRow = { key: string; label: string; value: number | null; selected: boolean };
+
+// One-series horizontal bar chart (single hue, sorted, direct value labels, hover title)
+function BarList({ title, rows, unit, note }: { title: string; rows: BarRow[]; unit: string; note?: string }) {
+  const sorted = [...rows].sort((a, b) => (b.value ?? -1) - (a.value ?? -1));
+  const max = Math.max(0, ...sorted.map((r) => r.value ?? 0));
+  const anySelected = sorted.some((r) => r.selected);
+  return (
+    <figure className="bar-chart">
+      <figcaption>{title}</figcaption>
+      {sorted.map((r) => {
+        const width = max > 0 && r.value ? (r.value / max) * 100 : 0;
+        const value = formatMetric(r.value, unit);
+        return (
+          <div
+            key={r.key}
+            className={`bar-row${anySelected && !r.selected ? " is-dim" : ""}`}
+            title={`${r.label}: ${value}`}
+          >
+            <span className="bar-label">{r.label}</span>
+            <span className="bar-track"><span className="bar" style={{ width: `${width}%` }} /></span>
+            <span className="bar-value">{value}</span>
+          </div>
+        );
+      })}
+      {note && <p className="hint">{note}</p>}
+    </figure>
+  );
+}
+
+type DashboardProps = {
+  data: DashboardResponse | null;
+  loading: boolean;
+  districts: District[];
+  selectedPcode: string;
+  onSelectPcode: (pcode: string) => void;
+  nearM: number;
+  onNearM: (m: number) => void;
+  onClose: () => void;
+};
+
+function DashboardView({
+  data, loading, districts, selectedPcode, onSelectPcode, nearM, onNearM, onClose,
+}: DashboardProps) {
+  const definitions = new Map((data?.definitions ?? []).map((d) => [d.id, d]));
+  const unitOf = (id: string) => definitions.get(id)?.unit ?? "";
+  const bars = (key: keyof DashboardDistrict): BarRow[] =>
+    (data?.districts ?? []).map((d) => ({
+      key: d.pcode,
+      label: d.name,
+      value: d[key] as number | null,
+      selected: d.pcode === selectedPcode,
+    }));
+
+  return (
+    <div className="dashboard">
+      <div className="dash-header">
+        <div>
+          <h2>Dashboard · {data?.scope.name ?? "…"}</h2>
+          {data && (
+            <p className="subtitle">
+              Flood indicators: {data.hazard.title} (observed {data.hazard.observed_dates}) ·
+              near = within {formatDistance(nearM)}
+            </p>
+          )}
+        </div>
+        <button type="button" className="btn btn-secondary dash-close" onClick={onClose}>
+          Back to map
+        </button>
+      </div>
+
+      <div className="dash-filters">
+        <label className="field">
+          <span>District</span>
+          <select value={selectedPcode} onChange={(e) => onSelectPcode(e.target.value)}>
+            <option value="">All pilot districts</option>
+            {districts.map((d) => <option key={d.pcode} value={d.pcode}>{d.name}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>"Near" means within</span>
+          <select value={nearM} onChange={(e) => onNearM(Number(e.target.value))}>
+            {NEAR_OPTIONS.map((m) => <option key={m} value={m}>{formatDistance(m)}</option>)}
+          </select>
+        </label>
+      </div>
+
+      {loading && <p className="subtitle">Loading dashboard…</p>}
+
+      {data && !loading && (
+        <>
+          <div className="kpi-grid">
+            {data.kpis.map((k) => {
+              const def = definitions.get(k.id);
+              return (
+                <div className="kpi" key={k.id} title={def?.definition}>
+                  <span className="kpi-value">{formatMetric(k.value, unitOf(k.id))}</span>
+                  <span className="kpi-label">{def?.label ?? k.id}</span>
+                  <span className="kind">{def?.kind}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="chart-grid">
+            <BarList
+              title="Observed flooding by district (km²)"
+              rows={bars("flooded_km2")}
+              unit="km²"
+              note="Sentinel-1 on two dates; likely an under-estimate."
+            />
+            <BarList
+              title="Settlements intersecting observed flooding"
+              rows={bars("settlements_in_flood")}
+              unit="count"
+              note="GRID3 footprints x observed flooding."
+            />
+            <BarList
+              title={`Assets flagged (in or within ${formatDistance(nearM)} of observed water)`}
+              rows={bars("assets_flagged")}
+              unit="count"
+              note="Mapped OpenStreetMap assets only."
+            />
+          </div>
+
+          <h3 className="dash-h3">By district</h3>
+          <div className="table-wrap">
+            <table className="summary-table dash-table">
+              <thead>
+                <tr>
+                  <th>District</th><th>Area</th><th>Assets</th><th>Settlements</th><th>Buildings</th>
+                  <th>Flooding</th><th>Ambiguous</th><th>Settl. in flood</th>
+                  <th>Settl. ambig./near</th><th>Assets flagged</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.districts.map((d) => (
+                  <tr key={d.pcode} className={d.pcode === selectedPcode ? "is-selected" : ""}>
+                    <td>{d.name} <span className="muted">({d.pcode})</span></td>
+                    <td>{formatMetric(d.area_km2, "km²")}</td>
+                    <td>{formatMetric(d.assets, "count")}</td>
+                    <td>{formatMetric(d.settlements, "count")}</td>
+                    <td>{formatMetric(d.buildings, "count")}</td>
+                    <td>{formatMetric(d.flooded_km2, "km²")}</td>
+                    <td>{formatMetric(d.ambiguous_km2, "km²")}</td>
+                    <td>{formatMetric(d.settlements_in_flood, "count")}</td>
+                    <td>{formatMetric(d.settlements_ambiguous_or_near, "count")}</td>
+                    <td>{formatMetric(d.assets_flagged, "count")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h3 className="dash-h3">Assets by type · {data.scope.name}</h3>
+          <div className="table-wrap">
+            <table className="summary-table dash-table">
+              <thead>
+                <tr><th>Asset type</th><th>Mapped</th><th>In flood</th><th>In ambiguous</th><th>Near</th><th>Coverage</th></tr>
+              </thead>
+              <tbody>
+                {data.asset_types.map((t) => (
+                  <tr key={t.asset_type}>
+                    <td>{t.label}</td>
+                    <td>{t.total}</td>
+                    <td>{t.in_flood}</td>
+                    <td>{t.in_ambiguous}</td>
+                    <td>{t.near}</td>
+                    <td className="text-cell">{t.coverage_warning ? `⚠ ${t.coverage_warning}` : "–"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h3 className="dash-h3">Metric definitions</h3>
+          <div className="table-wrap">
+            <table className="summary-table dash-table definitions">
+              <thead>
+                <tr><th>Metric</th><th>Kind</th><th>Definition</th><th>Source</th></tr>
+              </thead>
+              <tbody>
+                {data.definitions.map((d) => (
+                  <tr key={d.id}>
+                    <td>{d.label}</td>
+                    <td className="text-cell"><span className="kind">{d.kind}</span></td>
+                    <td className="text-cell">{d.definition}</td>
+                    <td className="text-cell">{d.source}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="hint">
+            Kinds: <strong>Observation</strong> = counted or measured from a source dataset;
+            {" "}<strong>Modelled estimate</strong> = produced by a provider's model;
+            {" "}<strong>Derived</strong> = calculated by GeoPulse from other layers.
+          </p>
+          <p className="warning">{data.note}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -387,6 +644,9 @@ export default function App() {
   const [siteRadius, setSiteRadius] = useState(1000);
   const [comparison, setComparison] = useState<ComparisonResponse | null>(null);
   const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [view, setView] = useState<"map" | "dashboard">("map");
+  const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
 
   function showPopup(lngLat: maplibregl.LngLatLike, properties: Record<string, unknown>) {
     const map = mapRef.current;
@@ -894,6 +1154,29 @@ export default function App() {
     };
   }, [sites, siteRadius, mapReady]);
 
+  // Load dashboard figures while the dashboard is open
+  useEffect(() => {
+    if (view !== "dashboard") return;
+    let cancelled = false;
+    setDashboardLoading(true);
+    const query =
+      `pilot_id=${PILOT_ID}&hazard_id=${HAZARD_ID}&near_m=${nearM}` +
+      (selectedPcode ? `&pcode=${encodeURIComponent(selectedPcode)}` : "");
+    fetchJson(`${API_URL}/dashboard?${query}`)
+      .then((data) => {
+        if (!cancelled) setDashboard(data as DashboardResponse);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setDashboardLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, nearM, selectedPcode]);
+
   // Asset counts for the current district selection
   const counts = useMemo(() => {
     const result = new Map<string, number>();
@@ -1007,6 +1290,14 @@ export default function App() {
 
         {mapReady && (
           <>
+            <button
+              type="button"
+              className="btn dash-toggle"
+              onClick={() => setView((v) => (v === "map" ? "dashboard" : "map"))}
+            >
+              {view === "map" ? "Open dashboard" : "Back to map"}
+            </button>
+
             <label className="field">
               <span>District</span>
               <select value={selectedPcode} onChange={(e) => setSelectedPcode(e.target.value)}>
@@ -1388,7 +1679,21 @@ export default function App() {
           evidence of absence on the ground.
         </p>
       </aside>
-      <div ref={mapContainer} className="map" />
+      <div className="map-area">
+        <div ref={mapContainer} className="map" />
+        {view === "dashboard" && (
+          <DashboardView
+            data={dashboard}
+            loading={dashboardLoading}
+            districts={districts}
+            selectedPcode={selectedPcode}
+            onSelectPcode={setSelectedPcode}
+            nearM={nearM}
+            onNearM={setNearM}
+            onClose={() => setView("map")}
+          />
+        )}
+      </div>
     </div>
   );
 }

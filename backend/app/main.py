@@ -1026,3 +1026,166 @@ def compare_sites(
                 "value is favourable depends on the project. Preliminary screening only; distances are "
                 "straight-line.",
     }
+
+
+# ---------------------------------------------------------------- dashboard (Module 4)
+
+# Every metric shown on the dashboard, with what kind of number it is and where it comes from
+METRIC_DEFINITIONS = [
+    {"id": "area_km2", "label": "District area", "unit": "km²", "kind": "Observation",
+     "definition": "Geodesic area of the district boundary.", "source": "D-01 COD-AB boundaries"},
+    {"id": "assets", "label": "Mapped assets", "unit": "count", "kind": "Observation",
+     "definition": "OpenStreetMap features loaded as assets (roads, bridges, places, facilities, "
+                   "power), excluding water features. Counts mapped features, not all that exist.",
+     "source": "D-02 OpenStreetMap"},
+    {"id": "settlements", "label": "Settlement footprints", "unit": "count", "kind": "Modelled estimate",
+     "definition": "GRID3 settlement polygons whose interior point lies in the district.",
+     "source": "D-04 GRID3 v3.0"},
+    {"id": "buildings", "label": "Buildings in settlements", "unit": "count", "kind": "Modelled estimate",
+     "definition": "Sum of GRID3 building counts for those settlements (detected from imagery).",
+     "source": "D-04 GRID3 v3.0"},
+    {"id": "flooded_km2", "label": "Observed flooding", "unit": "km²", "kind": "Derived",
+     "definition": "Area of new water attributable to the Oct 2023 event (Sentinel-1, two dates). "
+                   "Likely an under-estimate.", "source": "D-08 (GeoPulse analysis)"},
+    {"id": "ambiguous_km2", "label": "Ambiguous seasonal water", "unit": "km²", "kind": "Derived",
+     "definition": "New water in places that historically hold water at least 10% of the time "
+                   "(e.g. lagoons, salt pans); not attributable to the event.",
+     "source": "D-08 (GeoPulse analysis)"},
+    {"id": "settlements_in_flood", "label": "Settlements intersecting observed flooding", "unit": "count",
+     "kind": "Derived", "definition": "Settlement footprints that intersect attributable flooding.",
+     "source": "D-04 x D-08"},
+    {"id": "settlements_ambiguous_or_near", "label": "Settlements in ambiguous water or near",
+     "unit": "count", "kind": "Derived",
+     "definition": "Settlements not intersecting attributable flooding but touching ambiguous water, "
+                   "or within the chosen 'near' distance of observed new water.",
+     "source": "D-04 x D-08"},
+    {"id": "assets_flagged", "label": "Assets flagged", "unit": "count", "kind": "Derived",
+     "definition": "Non-water assets in, or within the chosen 'near' distance of, observed new water.",
+     "source": "D-02 x D-08"},
+]
+
+
+@app.get("/dashboard", tags=["dashboard"])
+def dashboard(
+    pilot_id: str = Query("lower_volta"),
+    hazard_id: str = Query("flood_2023_observed"),
+    near_m: float = Query(250, ge=0, le=5000, description="Distance in metres that counts as 'near'"),
+    pcode: str | None = Query(None, max_length=20, description="Limit the headline figures and asset table to one district"),
+):
+    """Summary indicators by district and asset type, each with a metric definition (FR-05)."""
+    district_sql = text("""
+        WITH d AS (
+            SELECT b.pcode, b.name, b.parent_name AS region,
+                   ST_Area(b.geom::geography) / 1e6 AS area_km2
+            FROM admin_boundaries b
+            JOIN pilot_districts p USING (pcode)
+            WHERE p.pilot_id = :pid
+        ),
+        a AS (
+            SELECT a.adm2_pcode AS pcode,
+                   count(*) FILTER (WHERE t.category <> 'water') AS assets,
+                   count(*) FILTER (
+                       WHERE t.category <> 'water'
+                         AND (s.dist_flooded_m = 0 OR s.dist_ambiguous_m = 0
+                              OR LEAST(s.dist_flooded_m, s.dist_ambiguous_m) <= :near)
+                   ) AS assets_flagged
+            FROM assets a
+            JOIN asset_types t USING (asset_type)
+            LEFT JOIN asset_hazard_screening s ON s.asset_id = a.asset_id AND s.hazard_id = :hid
+            GROUP BY a.adm2_pcode
+        ),
+        st AS (
+            SELECT s.adm2_pcode AS pcode,
+                   count(*) AS settlements,
+                   COALESCE(sum(s.building_count), 0) AS buildings,
+                   count(*) FILTER (WHERE r.flooded_m2 > 0) AS settlements_in_flood,
+                   count(*) FILTER (
+                       WHERE r.flooded_m2 = 0 AND (r.ambiguous_m2 > 0 OR r.dist_m <= :near)
+                   ) AS settlements_ambiguous_or_near
+            FROM settlements s
+            LEFT JOIN settlement_hazard_screening r
+                   ON r.settlement_id = s.settlement_id AND r.hazard_id = :hid
+            GROUP BY s.adm2_pcode
+        )
+        SELECT d.pcode, d.name, d.region, d.area_km2,
+               COALESCE(a.assets, 0) AS assets,
+               COALESCE(a.assets_flagged, 0) AS assets_flagged,
+               COALESCE(st.settlements, 0) AS settlements,
+               COALESCE(st.buildings, 0) AS buildings,
+               COALESCE(st.settlements_in_flood, 0) AS settlements_in_flood,
+               COALESCE(st.settlements_ambiguous_or_near, 0) AS settlements_ambiguous_or_near
+        FROM d
+        LEFT JOIN a USING (pcode)
+        LEFT JOIN st USING (pcode)
+        ORDER BY d.pcode
+    """)
+
+    type_filter = "AND a.adm2_pcode = :pcode" if pcode else ""
+    asset_type_sql = text(f"""
+        SELECT t.asset_type, t.label, t.category, t.coverage_warning,
+               count(*) AS total,
+               count(*) FILTER (WHERE s.dist_flooded_m = 0) AS in_flood,
+               count(*) FILTER (WHERE s.dist_flooded_m > 0 AND s.dist_ambiguous_m = 0) AS in_ambiguous,
+               count(*) FILTER (
+                   WHERE s.dist_flooded_m > 0 AND s.dist_ambiguous_m > 0
+                     AND LEAST(s.dist_flooded_m, s.dist_ambiguous_m) <= :near
+               ) AS near
+        FROM assets a
+        JOIN asset_types t USING (asset_type)
+        LEFT JOIN asset_hazard_screening s ON s.asset_id = a.asset_id AND s.hazard_id = :hid
+        WHERE t.category <> 'water' {type_filter}
+        GROUP BY t.asset_type, t.label, t.category, t.coverage_warning
+        ORDER BY t.category, t.asset_type
+    """)
+
+    params = {"pid": pilot_id, "hid": hazard_id, "near": near_m, "pcode": pcode}
+    with engine.connect() as conn:
+        _require_hazard(conn, hazard_id)
+        districts = [dict(r) for r in conn.execute(district_sql, params).mappings()]
+        asset_types = [dict(r) for r in conn.execute(asset_type_sql, params).mappings()]
+        layer = conn.execute(text("""
+            SELECT title, observed_dates, metadata -> 'district_stats' AS district_stats
+            FROM hazard_layers WHERE hazard_id = :hid
+        """), {"hid": hazard_id}).mappings().first()
+
+    if not districts:
+        raise HTTPException(status_code=404, detail=f"Unknown pilot: {pilot_id}")
+
+    # Flooded area per district comes from the Earth Engine statistics stored with the flood layer
+    flood_stats = {s["pcode"]: s for s in (layer["district_stats"] or [])}
+    for d in districts:
+        stats = flood_stats.get(d["pcode"], {})
+        d["area_km2"] = round(float(d["area_km2"]), 1)
+        d["flooded_km2"] = stats.get("flooded_km2")
+        d["ambiguous_km2"] = stats.get("ambiguous_km2")
+        for key in ("assets", "assets_flagged", "settlements", "buildings",
+                    "settlements_in_flood", "settlements_ambiguous_or_near"):
+            d[key] = int(d[key])
+
+    scope = [d for d in districts if d["pcode"] == pcode] if pcode else districts
+    if pcode and not scope:
+        raise HTTPException(status_code=404, detail=f"District {pcode} is not in pilot {pilot_id}")
+
+    def total(key):
+        values = [d[key] for d in scope if d[key] is not None]
+        return round(sum(values), 1) if values else None
+
+    kpis = [
+        {"id": k, "value": total(k)}
+        for k in ("area_km2", "assets", "settlements", "buildings", "flooded_km2",
+                  "ambiguous_km2", "settlements_in_flood", "assets_flagged")
+    ]
+
+    return {
+        "pilot_id": pilot_id,
+        "scope": {"pcode": pcode, "name": scope[0]["name"] if pcode else "All pilot districts"},
+        "near_m": near_m,
+        "hazard": {"hazard_id": hazard_id, "title": layer["title"], "observed_dates": layer["observed_dates"]},
+        "kpis": kpis,
+        "districts": districts,
+        "asset_types": [{**t, "total": int(t["total"]), "in_flood": int(t["in_flood"]),
+                         "in_ambiguous": int(t["in_ambiguous"]), "near": int(t["near"])} for t in asset_types],
+        "definitions": METRIC_DEFINITIONS,
+        "note": "Preliminary screening information. Counts of mapped features are not counts of all "
+                "features that exist; see each metric's definition and kind.",
+    }
