@@ -13,7 +13,7 @@ import {
   API_URL, BASEMAPS, type BasemapId, CATEGORY_COLOURS, CLICKABLE_ASSET_LAYERS, FILTERED_LAYERS,
   FLOOD_COLOURS, HAZARD_ID, LAYER_TYPES, PILOT_ID, SITE_LETTERS,
 } from "./config";
-import { comparisonQuery, dashboardQuery, errorMessage, fetchJson, loadBasemap } from "./lib/api";
+import { comparisonQuery, dashboardQuery, errorMessage, fetchJson, loadBasemap, waitForApi } from "./lib/api";
 import { anchorPoint, circleRing, geometryBounds } from "./lib/geo";
 import {
   DIMMED, FLAGGED, STATUS, type SourceData, categoryColour, categoryColours, expr, filterExpr, layerFilter,
@@ -67,6 +67,7 @@ export default function App() {
   const [hazard, setHazard] = useState<HazardLayer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [slowStart, setSlowStart] = useState(false);
   const [hiddenCategories, setHiddenCategories] = useState<string[]>([]);
   const [selectedPcode, setSelectedPcode] = useState("");
   const [query, setQuery] = useState("");
@@ -327,6 +328,8 @@ export default function App() {
 
       map.on("load", async () => {
         try {
+          // The hosted API sleeps when idle; give it time to wake before loading data
+          await waitForApi();
           const [districtsFc, assetsFc, typeList, hazardList, floodFc, settlementsFc]: [
             FeatureCollection<DistrictProperties>,
             FeatureCollection,
@@ -565,6 +568,13 @@ export default function App() {
       setMapReady(false);
     };
   }, []);
+
+  // If loading takes a while, explain why (the free hosted API may be waking up)
+  useEffect(() => {
+    if (mapReady || error) return;
+    const timer = setTimeout(() => setSlowStart(true), 6000);
+    return () => clearTimeout(timer);
+  }, [mapReady, error]);
 
   // Escape cancels "click the map" mode
   useEffect(() => {
@@ -892,6 +902,11 @@ export default function App() {
             </div>
           )}
           {!error && !mapReady && <p className="loading-line">Loading pilot data…</p>}
+          {!error && !mapReady && slowStart && (
+            <p className="hint">
+              The server goes to sleep when nobody is using it, so the first visit can take up to a minute.
+            </p>
+          )}
           {panel}
         </aside>
 

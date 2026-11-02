@@ -43,3 +43,16 @@ export async function loadBasemap(id: BasemapId): Promise<{ style: StyleSpecific
     clearTimeout(timer);
   }
 }
+
+// Wait until the API answers its health check (a sleeping free server can take about a minute to wake)
+export async function waitForApi(attempts = 12, delayMs = 6000): Promise<void> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const response = await fetch(`${API_URL}/health`);
+      if (response.ok && (response.headers.get("content-type") ?? "").includes("json")) return;
+    } catch {
+      // Not awake yet (or a wake-up page without CORS headers): try again shortly
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+}
