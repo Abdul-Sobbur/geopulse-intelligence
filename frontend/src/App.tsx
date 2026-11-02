@@ -10,6 +10,7 @@ import "./App.css";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
 const PILOT_ID = "lower_volta";
+const HAZARD_ID = "flood_2023_observed";
 // Free basemap, no API key needed (OpenFreeMap, built on OpenStreetMap data)
 const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/positron";
 
@@ -21,11 +22,27 @@ const CATEGORY_COLOURS: Record<string, string> = {
   energy: "#e31a1c",
 };
 
+const FLOOD_COLOURS = { flooded: "#00a6ff", ambiguous: "#f39c12" };
+const STATUS_COLOURS = { in_flood: "#b42318", in_ambiguous: "#f39c12", near: "#d4a72c" };
+const STATUS_LABELS: Record<string, string> = {
+  in_flood: "In observed flood",
+  in_ambiguous: "In ambiguous seasonal water",
+  near: "Near observed water",
+  not_flagged: "Not flagged",
+  context: "Water feature (context)",
+};
+const NEAR_OPTIONS = [100, 250, 500, 1000];
+
 // Which asset types each map layer draws
 const LAYER_TYPES: Record<string, string[]> = {
   "asset-areas": ["water_body"],
   "asset-lines": ["road", "bridge", "waterway", "power_line"],
   "asset-points": ["place", "education", "health", "power_plant", "power_substation"],
+};
+// Layers whose filters follow the category and district selections
+const FILTERED_LAYERS: Record<string, string[]> = {
+  ...LAYER_TYPES,
+  "asset-lines-halo": LAYER_TYPES["asset-lines"],
 };
 
 const MAX_RESULTS = 20;
@@ -51,12 +68,51 @@ type FeatureCollection = { type: "FeatureCollection"; features: Feature[]; bbox?
 
 type District = { pcode: string; name: string; region: string; bounds: Bounds };
 
-// Colour each feature by its category (MapLibre "match" expression)
-const categoryColour = [
+type HazardLayer = {
+  hazard_id: string;
+  title: string;
+  source_id: string;
+  observed_dates: string | null;
+  method: string | null;
+  pre_event_window: string[] | null;
+  limitations: string[] | null;
+};
+
+type ScreeningAsset = {
+  asset_id: number;
+  asset_type: string;
+  category: string;
+  status: string;
+  distance_m: number | null;
+  flooded_length_m: number | null;
+};
+
+type ScreeningResponse = { hazard_id: string; near_m: number; assets: ScreeningAsset[] };
+
+type SummaryRow = { asset_type: string; total: number; in_flood: number; in_ambiguous: number; near: number };
+
+function expr(value: unknown): ExpressionSpecification {
+  return value as ExpressionSpecification;
+}
+
+// Colour each feature by its category
+const categoryColour = expr([
   "match", ["get", "category"],
   ...Object.entries(CATEGORY_COLOURS).flat(),
   "#666666",
-] as unknown as ExpressionSpecification;
+]);
+
+// Screening status lives in MapLibre "feature state" (set without reloading data)
+const STATUS = ["coalesce", ["feature-state", "status"], "none"];
+const FLAGGED = ["in_flood", "in_ambiguous", "near"];
+const DIMMED = ["not_flagged", "context"];
+const statusColour = expr([
+  "match", STATUS,
+  "in_flood", STATUS_COLOURS.in_flood,
+  "in_ambiguous", STATUS_COLOURS.in_ambiguous,
+  "near", STATUS_COLOURS.near,
+  "#ffffff",
+]);
 
 // Filter for an asset layer: its own types, minus hidden categories, optionally one district
 function layerFilter(types: string[], hidden: string[], pcode: string): FilterSpecification {
@@ -116,6 +172,7 @@ function popupHtml(
   p: Record<string, unknown>,
   warningByType: Map<string, string | null>,
   districtNames: Map<string, string>,
+  screening?: ScreeningAsset,
 ): string {
   const name = text(p.name) ?? "(unnamed)";
   const subtype = text(p.subtype);
@@ -126,11 +183,23 @@ function popupHtml(
   const refLink = ref
     ? `<a href="https://www.openstreetmap.org/${escapeHtml(ref)}" target="_blank" rel="noopener">${escapeHtml(ref)}</a>`
     : "";
+
+  let screeningLine = "";
+  if (screening && screening.status !== "context") {
+    const parts = [STATUS_LABELS[screening.status] ?? screening.status];
+    if (screening.distance_m !== null && screening.distance_m > 0) {
+      parts.push(`${Math.round(screening.distance_m)} m from observed water`);
+    }
+    if (screening.flooded_length_m) parts.push(`${Math.round(screening.flooded_length_m)} m inside flood`);
+    screeningLine = `<p><strong>Flood screening:</strong> ${escapeHtml(parts.join(" · "))}</p>`;
+  }
+
   return `
     <div class="popup">
       <h3>${escapeHtml(name)}</h3>
       <p>${escapeHtml(text(p.label) ?? "")}${subtype ? " · " + escapeHtml(subtype) : ""}</p>
       <p>District: ${escapeHtml(district)}</p>
+      ${screeningLine}
       <p>Source: ${escapeHtml(text(p.source_id) ?? "")} · ${refLink} · ${escapeHtml(text(p.source_date) ?? "")}</p>
       ${warning ? `<p class="warning">⚠ ${escapeHtml(warning)}</p>` : ""}
     </div>`;
@@ -143,23 +212,30 @@ export default function App() {
   const pilotBoundsRef = useRef<Bounds | null>(null);
   const warningByTypeRef = useRef(new Map<string, string | null>());
   const districtNamesRef = useRef(new Map<string, string>());
+  const screeningRef = useRef(new Map<number, ScreeningAsset>());
 
   const [assetTypes, setAssetTypes] = useState<AssetType[]>([]);
   const [assetsData, setAssetsData] = useState<FeatureCollection | null>(null);
   const [districts, setDistricts] = useState<District[]>([]);
+  const [hazard, setHazard] = useState<HazardLayer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [hiddenCategories, setHiddenCategories] = useState<string[]>([]);
   const [selectedPcode, setSelectedPcode] = useState("");
   const [query, setQuery] = useState("");
+  const [showFlood, setShowFlood] = useState(true);
+  const [screeningOn, setScreeningOn] = useState(false);
+  const [nearM, setNearM] = useState(250);
+  const [screening, setScreening] = useState<ScreeningResponse | null>(null);
 
   function showPopup(lngLat: maplibregl.LngLatLike, properties: Record<string, unknown>) {
     const map = mapRef.current;
     if (!map) return;
     popupRef.current?.remove();
-    popupRef.current = new maplibregl.Popup({ maxWidth: "280px" })
+    const screeningInfo = screeningRef.current.get(Number(properties.asset_id));
+    popupRef.current = new maplibregl.Popup({ maxWidth: "300px" })
       .setLngLat(lngLat)
-      .setHTML(popupHtml(properties, warningByTypeRef.current, districtNamesRef.current))
+      .setHTML(popupHtml(properties, warningByTypeRef.current, districtNamesRef.current, screeningInfo))
       .addTo(map);
   }
 
@@ -179,10 +255,13 @@ export default function App() {
 
     map.on("load", async () => {
       try {
-        const [districtsFc, assetsFc, types] = await Promise.all([
+        const [districtsFc, assetsFc, types, hazardList, floodFc] = await Promise.all([
           fetchJson(`${API_URL}/pilots/${PILOT_ID}/districts`),
           fetchJson(`${API_URL}/assets?limit=5000`),
           fetchJson(`${API_URL}/asset-types`),
+          // Hazard data is optional: the asset map still works without it
+          fetchJson(`${API_URL}/hazards`).catch(() => null),
+          fetchJson(`${API_URL}/hazards/${HAZARD_ID}/features`).catch(() => null),
         ]);
         const typeList = types as AssetType[];
 
@@ -203,8 +282,28 @@ export default function App() {
         map.addLayer({
           id: "asset-areas", type: "fill", source: "assets",
           filter: layerFilter(LAYER_TYPES["asset-areas"], [], ""),
-          paint: { "fill-color": categoryColour, "fill-opacity": 0.35 },
+          paint: {
+            "fill-color": categoryColour,
+            "fill-opacity": expr(["match", STATUS, DIMMED, 0.1, 0.35]),
+          },
         });
+
+        if (floodFc) {
+          map.addSource("hazard", { type: "geojson", data: floodFc });
+          map.addLayer({
+            id: "hazard-fill", type: "fill", source: "hazard",
+            paint: {
+              "fill-color": expr([
+                "match", ["get", "class_name"],
+                "flooded", FLOOD_COLOURS.flooded,
+                "ambiguous", FLOOD_COLOURS.ambiguous,
+                "#999999",
+              ]),
+              "fill-opacity": 0.6,
+            },
+          });
+        }
+
         map.addLayer({
           id: "district-outline", type: "line", source: "districts",
           paint: { "line-color": "#3e4c59", "line-width": 1.5, "line-dasharray": [3, 2] },
@@ -215,16 +314,27 @@ export default function App() {
           paint: { "line-color": "#1f2933", "line-width": 3.5 },
         });
         map.addLayer({
+          id: "asset-lines-halo", type: "line", source: "assets",
+          filter: layerFilter(LAYER_TYPES["asset-lines"], [], ""),
+          paint: {
+            "line-color": statusColour,
+            "line-width": 8,
+            "line-blur": 1,
+            "line-opacity": expr(["match", STATUS, FLAGGED, 0.55, 0]),
+          },
+        });
+        map.addLayer({
           id: "asset-lines", type: "line", source: "assets",
           filter: layerFilter(LAYER_TYPES["asset-lines"], [], ""),
           paint: {
             "line-color": categoryColour,
-            "line-width": [
+            "line-width": expr([
               "case",
               ["==", ["get", "asset_type"], "bridge"], 5,
               ["==", ["get", "asset_type"], "road"], 2,
               1.5,
-            ],
+            ]),
+            "line-opacity": expr(["match", STATUS, DIMMED, 0.2, 1]),
           },
         });
         map.addLayer({
@@ -232,13 +342,15 @@ export default function App() {
           filter: layerFilter(LAYER_TYPES["asset-points"], [], ""),
           paint: {
             "circle-color": categoryColour,
-            "circle-radius": ["case", ["==", ["get", "asset_type"], "place"], 3.5, 5],
-            "circle-stroke-color": "#ffffff",
-            "circle-stroke-width": 1,
+            "circle-radius": expr(["case", ["==", ["get", "asset_type"], "place"], 3.5, 5]),
+            "circle-stroke-color": statusColour,
+            "circle-stroke-width": expr(["match", STATUS, FLAGGED, 3, 1]),
+            "circle-opacity": expr(["match", STATUS, DIMMED, 0.25, 1]),
+            "circle-stroke-opacity": expr(["match", STATUS, DIMMED, 0.25, 1]),
           },
         });
 
-        // Click an asset to see its details and provenance
+        // Click an asset to see its details, provenance and screening status
         for (const layerId of Object.keys(LAYER_TYPES)) {
           map.on("click", layerId, (e) => {
             const feature = e.features?.[0];
@@ -250,6 +362,9 @@ export default function App() {
 
         setAssetTypes(typeList);
         setAssetsData(assetsFc as FeatureCollection);
+        setHazard(
+          ((hazardList as HazardLayer[] | null) ?? []).find((h) => h.hazard_id === HAZARD_ID) ?? null,
+        );
         setDistricts(
           (districtsFc as FeatureCollection).features
             .map((f) => ({
@@ -277,7 +392,7 @@ export default function App() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
-    for (const [layerId, types] of Object.entries(LAYER_TYPES)) {
+    for (const [layerId, types] of Object.entries(FILTERED_LAYERS)) {
       map.setFilter(layerId, layerFilter(types, hiddenCategories, selectedPcode));
     }
   }, [hiddenCategories, selectedPcode, mapReady]);
@@ -293,6 +408,44 @@ export default function App() {
     if (target) map.fitBounds(target, { padding: 40 });
   }, [selectedPcode, mapReady, districts]);
 
+  // Show or hide the flood layer
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !map.getLayer("hazard-fill")) return;
+    map.setLayoutProperty("hazard-fill", "visibility", showFlood ? "visible" : "none");
+  }, [showFlood, mapReady]);
+
+  // Load screening results and apply them as feature state
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    let cancelled = false;
+    map.removeFeatureState({ source: "assets" });
+    screeningRef.current = new Map();
+
+    if (!screeningOn) {
+      setScreening(null);
+      return;
+    }
+
+    fetchJson(`${API_URL}/screening/${HAZARD_ID}?near_m=${nearM}`)
+      .then((data: ScreeningResponse) => {
+        if (cancelled) return;
+        screeningRef.current = new Map(data.assets.map((a) => [a.asset_id, a]));
+        for (const a of data.assets) {
+          map.setFeatureState({ source: "assets", id: a.asset_id }, { status: a.status });
+        }
+        setScreening(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [screeningOn, nearM, mapReady]);
+
   // Asset counts for the current district selection
   const counts = useMemo(() => {
     const result = new Map<string, number>();
@@ -303,6 +456,30 @@ export default function App() {
     }
     return result;
   }, [assetsData, selectedPcode]);
+
+  // Screening summary, respecting the district filter (water features excluded)
+  const screeningSummary = useMemo(() => {
+    if (!screening || !assetsData) return [];
+    const pcodeById = new Map(
+      assetsData.features.map((f) => [f.properties.asset_id as number, f.properties.adm2_pcode as string]),
+    );
+    const rows = new Map<string, SummaryRow>();
+    for (const a of screening.assets) {
+      if (a.status === "context") continue;
+      if (selectedPcode && pcodeById.get(a.asset_id) !== selectedPcode) continue;
+      const row = rows.get(a.asset_type) ?? {
+        asset_type: a.asset_type, total: 0, in_flood: 0, in_ambiguous: 0, near: 0,
+      };
+      row.total += 1;
+      if (a.status === "in_flood") row.in_flood += 1;
+      else if (a.status === "in_ambiguous") row.in_ambiguous += 1;
+      else if (a.status === "near") row.near += 1;
+      rows.set(a.asset_type, row);
+    }
+    return [...rows.values()].sort(
+      (x, y) => (y.in_flood + y.in_ambiguous + y.near) - (x.in_flood + x.in_ambiguous + x.near),
+    );
+  }, [screening, assetsData, selectedPcode]);
 
   // Name search, respecting the district and category filters
   const matches = useMemo(() => {
@@ -337,6 +514,9 @@ export default function App() {
     );
   }
 
+  const labelFor = (assetType: string) =>
+    assetTypes.find((t) => t.asset_type === assetType)?.label ?? assetType;
+
   const scopeLabel = selectedPcode
     ? districts.find((d) => d.pcode === selectedPcode)?.name ?? selectedPcode
     : "all pilot districts";
@@ -345,7 +525,7 @@ export default function App() {
     <div className="app">
       <aside className="panel">
         <h1>GeoPulse Intelligence</h1>
-        <p className="subtitle">Pilot: Lower Volta corridor, Ghana · Asset map</p>
+        <p className="subtitle">Pilot: Lower Volta corridor, Ghana</p>
 
         {error && <p className="error">Could not load data: {error}. Is the API running?</p>}
         {!error && !mapReady && <p className="subtitle">Loading…</p>}
@@ -395,6 +575,89 @@ export default function App() {
               </ul>
             )}
 
+            {hazard && (
+              <section className="section">
+                <h2 className="section-title">Flood screening · 2023 spillage</h2>
+
+                <label className="check">
+                  <input type="checkbox" checked={showFlood} onChange={(e) => setShowFlood(e.target.checked)} />
+                  Show observed new water (Oct 2023)
+                </label>
+                <div className="legend-inline">
+                  <span><i className="box" style={{ background: FLOOD_COLOURS.flooded }} /> Flooding</span>
+                  <span><i className="box" style={{ background: FLOOD_COLOURS.ambiguous }} /> Ambiguous (lagoons/seasonal water)</span>
+                </div>
+
+                <label className="check">
+                  <input type="checkbox" checked={screeningOn} onChange={(e) => setScreeningOn(e.target.checked)} />
+                  Highlight asset exposure
+                </label>
+
+                {screeningOn && (
+                  <>
+                    <label className="field inline">
+                      <span>"Near" means within</span>
+                      <select value={nearM} onChange={(e) => setNearM(Number(e.target.value))}>
+                        {NEAR_OPTIONS.map((m) => (
+                          <option key={m} value={m}>{m >= 1000 ? `${m / 1000} km` : `${m} m`}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="legend-inline">
+                      <span><i className="ring" style={{ borderColor: STATUS_COLOURS.in_flood }} /> In flood</span>
+                      <span><i className="ring" style={{ borderColor: STATUS_COLOURS.in_ambiguous }} /> In ambiguous</span>
+                      <span><i className="ring" style={{ borderColor: STATUS_COLOURS.near }} /> Near</span>
+                    </div>
+
+                    {!screening && <p className="subtitle">Loading screening…</p>}
+                    {screening && (
+                      <>
+                        <p className="counts-scope">Flagged assets in {scopeLabel}</p>
+                        <table className="summary-table">
+                          <thead>
+                            <tr>
+                              <th>Asset type</th>
+                              <th title="In observed flood">In</th>
+                              <th title="In ambiguous seasonal water">Amb.</th>
+                              <th title={`Within ${nearM} m`}>Near</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {screeningSummary.map((r) => (
+                              <tr key={r.asset_type}>
+                                <td>{labelFor(r.asset_type)}</td>
+                                <td>{r.in_flood}</td>
+                                <td>{r.in_ambiguous}</td>
+                                <td>{r.near}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="warning">
+                          Preliminary screening only. Proximity to observed water is not a measure of
+                          damage, and assets not flagged are not confirmed safe.
+                        </p>
+                      </>
+                    )}
+                  </>
+                )}
+
+                <details className="method">
+                  <summary>Method &amp; limitations</summary>
+                  <p>
+                    <strong>Observed:</strong> {hazard.observed_dates} (Sentinel-1 radar, source {hazard.source_id})
+                  </p>
+                  {hazard.pre_event_window && (
+                    <p><strong>Baseline:</strong> {hazard.pre_event_window.join(" to ")}</p>
+                  )}
+                  <p><strong>Method:</strong> {hazard.method}</p>
+                  <ul>
+                    {(hazard.limitations ?? []).map((l) => <li key={l}>{l}</li>)}
+                  </ul>
+                </details>
+              </section>
+            )}
+
             <p className="hint">Click a category to show or hide it. Click a map feature for details.</p>
             <p className="counts-scope">Counts for {scopeLabel}</p>
           </>
@@ -439,8 +702,9 @@ export default function App() {
 
         <p className="notice">
           Preliminary screening information only. Assets: © OpenStreetMap contributors (ODbL),
-          snapshot 2026-10-31. Boundaries: Ghana Statistical Service via OCHA HDX.
-          Absence of a feature on this map is not evidence of absence on the ground.
+          snapshot 2026-10-31. Boundaries: Ghana Statistical Service via OCHA HDX. Flood layer:
+          derived from Copernicus Sentinel-1 data (2023). Absence of a feature on this map is not
+          evidence of absence on the ground.
         </p>
       </aside>
       <div ref={mapContainer} className="map" />

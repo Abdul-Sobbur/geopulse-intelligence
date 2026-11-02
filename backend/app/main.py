@@ -12,7 +12,7 @@ from .db import engine
 
 app = FastAPI(
     title="GeoPulse Intelligence API",
-    version="0.1.0",
+    version="0.2.0",
     description=(
         "Spatial decision-support API. Pilot area: Lower Volta corridor, Ghana. "
         "All outputs are preliminary screening information, not engineering "
@@ -29,6 +29,8 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------- system
+
 @app.get("/health", tags=["system"])
 def health():
     """Check that the API is running and can reach PostGIS."""
@@ -39,6 +41,8 @@ def health():
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"status": "ok", "database": "connected", "postgis": postgis}
 
+
+# ---------------------------------------------------------------- assets
 
 @app.get("/asset-types", tags=["assets"])
 def asset_types():
@@ -105,6 +109,8 @@ def assets(
         return conn.execute(sql, params).scalar()
 
 
+# ---------------------------------------------------------------- geography
+
 @app.get("/pilots/{pilot_id}/districts", tags=["geography"])
 def pilot_districts(pilot_id: str):
     """Return a pilot's districts as GeoJSON, with a bounding box for zooming."""
@@ -136,3 +142,109 @@ def pilot_districts(pilot_id: str):
     if not result["features"]:
         raise HTTPException(status_code=404, detail=f"Unknown pilot: {pilot_id}")
     return result
+
+
+# ---------------------------------------------------------------- hazards
+
+def _require_hazard(conn, hazard_id: str):
+    exists = conn.execute(
+        text("SELECT 1 FROM hazard_layers WHERE hazard_id = :hid"), {"hid": hazard_id}
+    ).scalar()
+    if not exists:
+        raise HTTPException(status_code=404, detail=f"Unknown hazard layer: {hazard_id}")
+
+
+@app.get("/hazards", tags=["hazards"])
+def hazards():
+    """List hazard layers with their source, dates, method, parameters and limitations."""
+    sql = text("""
+        SELECT hazard_id, title, hazard_type, source_id, observed_dates, method,
+               metadata -> 'pre_event_window' AS pre_event_window,
+               metadata -> 'parameters'       AS parameters,
+               metadata -> 'limitations'      AS limitations,
+               loaded_at
+        FROM hazard_layers
+        ORDER BY hazard_id
+    """)
+    with engine.connect() as conn:
+        return [dict(row) for row in conn.execute(sql).mappings()]
+
+
+@app.get("/hazards/{hazard_id}/features", tags=["hazards"])
+def hazard_features(hazard_id: str):
+    """Hazard polygons as GeoJSON, lightly simplified for display (about 5 m tolerance)."""
+    sql = text("""
+        WITH sel AS (
+            SELECT feature_id, class_code, class_name,
+                   ST_SimplifyPreserveTopology(geom, 0.00005) AS geom
+            FROM hazard_features
+            WHERE hazard_id = :hid
+        )
+        SELECT json_build_object(
+            'type', 'FeatureCollection',
+            'features', COALESCE(json_agg(json_build_object(
+                'type', 'Feature',
+                'id', feature_id,
+                'geometry', ST_AsGeoJSON(geom, 5)::json,
+                'properties', json_build_object('class_code', class_code, 'class_name', class_name)
+            )), '[]'::json)
+        )
+        FROM sel
+    """)
+    with engine.connect() as conn:
+        _require_hazard(conn, hazard_id)
+        return conn.execute(sql, {"hid": hazard_id}).scalar()
+
+
+# ---------------------------------------------------------------- screening
+
+@app.get("/screening/{hazard_id}", tags=["screening"])
+def screening(
+    hazard_id: str,
+    near_m: float = Query(250, ge=0, le=5000, description="Distance in metres that counts as 'near'"),
+):
+    """Preliminary exposure status of every asset against a hazard layer.
+
+    Statuses: in_flood, in_ambiguous, near, not_flagged, and context (water features,
+    which are reference layers rather than exposed assets).
+    """
+    sql = text("""
+        SELECT a.asset_id, a.asset_type, t.category,
+               CASE
+                   WHEN t.category = 'water' THEN 'context'
+                   WHEN s.dist_flooded_m = 0 THEN 'in_flood'
+                   WHEN s.dist_ambiguous_m = 0 THEN 'in_ambiguous'
+                   WHEN LEAST(s.dist_flooded_m, s.dist_ambiguous_m) <= :near THEN 'near'
+                   ELSE 'not_flagged'
+               END AS status,
+               round(LEAST(s.dist_flooded_m, s.dist_ambiguous_m)::numeric, 1)::float8 AS distance_m,
+               round(s.flooded_length_m::numeric, 1)::float8 AS flooded_length_m
+        FROM asset_hazard_screening s
+        JOIN assets a USING (asset_id)
+        JOIN asset_types t USING (asset_type)
+        WHERE s.hazard_id = :hid
+        ORDER BY a.asset_id
+    """)
+    with engine.connect() as conn:
+        _require_hazard(conn, hazard_id)
+        rows = [dict(r) for r in conn.execute(sql, {"hid": hazard_id, "near": near_m}).mappings()]
+
+    summary = {}
+    for r in rows:
+        if r["status"] == "context":
+            continue
+        s = summary.setdefault(r["asset_type"], {
+            "asset_type": r["asset_type"], "total": 0, "in_flood": 0, "in_ambiguous": 0, "near": 0,
+        })
+        s["total"] += 1
+        if r["status"] in ("in_flood", "in_ambiguous", "near"):
+            s[r["status"]] += 1
+
+    return {
+        "hazard_id": hazard_id,
+        "near_m": near_m,
+        "note": "Preliminary screening only. Proximity to observed water is not a measure of "
+                "damage, and assets not flagged are not confirmed safe.",
+        "summary": list(summary.values()),
+        "assets": rows,
+    }
