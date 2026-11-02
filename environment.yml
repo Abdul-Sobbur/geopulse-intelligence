@@ -1,19 +1,16 @@
 name: geopulse
 channels:
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
-  - defaults
   - conda-forge
 dependencies:
-  - sqlalchemy
-  - pyogrio
-  - geopandas
-  - jupyterlab
   - python=3.12
+  - geopandas
+  - pyogrio
+  - rasterio
+  - sqlalchemy
   - psycopg
   - geoalchemy2
   - python-dotenv
-  - uvicorn
   - fastapi
-prefix: C:\Users\hp\miniforge3\envs\geopulse
+  - uvicorn
+  - earthengine-api
+  - jupyterlab
