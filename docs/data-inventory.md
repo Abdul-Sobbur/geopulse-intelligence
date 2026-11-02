@@ -33,10 +33,10 @@ Eight riparian districts, defined by official P-codes from D-01 (see `config/pil
 | D-02 | OpenStreetMap Ghana extract (roads, waterways, water bodies, places, POIs) | OpenStreetMap contributors via Geofabrik | download.geofabrik.de/africa/ghana — file `ghana-261031.osm.pbf` (~117 MB); acquired 2026-11-01 | ODbL 1.0 (attribution + share-alike for derived databases) | Snapshot 2026-10-31 | Variable (crowd-sourced) | EPSG:4326 (confirmed) | Asset inventory (M1), proximity targets (M3) |
 | D-03 | OSM power infrastructure (plants, substations, high-voltage lines) | OpenStreetMap contributors (from D-02 or Overpass) | As D-02 | ODbL 1.0 | As D-02 | Variable | EPSG:4326 | Energy assets — **public, already-mapped features only**, screening-level detail |
 | D-04 | GRID3 Ghana Settlement Extents v3 | GRID3 / CIESIN, Columbia University | grid3.org / HDX | *(confirm in release notes)* | Imagery mostly 2019–2020+; v3 published 2024 | Settlement polygons | *(confirm on download)* | Settlements for exposure and proximity |
-| D-05 | Copernicus DEM GLO-30 | ESA / Copernicus (© DLR, Airbus) | Earth Engine `COPERNICUS/DEM/GLO30` | Copernicus WorldDEM-30 free licence; attribution notice required | Acquired 2011–2015 | 30 m | EPSG:4326 | Terrain/elevation context (M2, M6) |
+| D-05 | Copernicus DEM GLO-30 (release 2024_1) | ESA / Copernicus (© DLR, Airbus) | Earth Engine `COPERNICUS/DEM/GLO30_2024_1` (supersedes `COPERNICUS/DEM/GLO30`) | Copernicus WorldDEM-30 free licence; attribution notice required | Acquired 2011–2015 | 30 m | EPSG:4326 | Terrain/elevation context (M2, M6) |
 | D-06 | ESA WorldCover 10 m 2021 (v200) | ESA WorldCover consortium | Earth Engine `ESA/WorldCover/v200` | CC BY 4.0 | 2021 | 10 m | EPSG:4326 | Land-cover context (M2, M6) |
 | D-07 | Sentinel-1 GRD (SAR), IW mode, VV | ESA / Copernicus (Sentinel-1A only in 2023) | Earth Engine `COPERNICUS/S1_GRD`, project `ee-aasobbur`; scene list from `scripts/s1_scene_inventory.py` | Copernicus Sentinel data — free and open *(record exact terms)* | Two ascending tracks (rel. orbits 74 and 147), each covering ~65–69% of the pilot. Pre-event: 5 scenes per track, 19 Jul – 10 Sep 2023. Flood: track 147 on 2023-10-16, track 74 on 2023-10-23 | 10 m | EPSG:4326 | Input to D-08 |
-| D-08 | **2023 Lower Volta observed flood extent (derived)** | GeoPulse (own processing of D-07) | Earth Engine processing, project `ee-aasobbur` | Derived from D-07; own method documented | Union of two observation dates: 2023-10-16 (track 147) and 2023-10-23 (track 74) — not a single-date snapshot and not necessarily peak extent | ~10–20 m | EPSG:4326 | Hazard overlay for screening (M2) |
+| D-08 | **2023 Lower Volta observed flood extent (derived)** | GeoPulse (own processing of D-07) | `scripts/s1_flood_extent.py` (Earth Engine, project `ee-aasobbur`); outputs `data/processed/flood_2023/` (GeoTIFF + metadata JSON with all parameters and scene IDs) | Derived from D-07; ancillary JRC Global Surface Water 1.4 and D-05 | Union of two observation dates: 2023-10-16 (track 147) and 2023-10-23 (track 74) — not a single-date snapshot and not necessarily peak extent | 20 m grid (0.00018°) | EPSG:4326 | Hazard overlay for screening (M2). Classes: 1 flooded, 2 observed dry, 3 no coverage, 4 permanent water, 5 new water in recurrent seasonal water body (ambiguous) |
 
 ### Observed OSM coverage inside the pilot (snapshot 2026-10-31, `scripts/inspect_osm.py`)
 
@@ -53,6 +53,24 @@ Eight riparian districts, defined by official P-codes from D-01 (see `config/pil
 | Power plants / substations / line segments | 1 / 7 / 43 | **Sparse — likely incomplete**; public features only, coverage warning |
 
 Counts are raw OSM features: road and power counts are way *segments*, not route-km; facilities may be double-counted where mapped as both point and area.
+
+### D-08 first results (run 2026-11-02)
+
+Sentinel-1 coverage: 100% of every pilot district (two tracks combined).
+
+| P-code | District | Flooded km² (attributable) | Ambiguous km² (recurrent seasonal water) |
+|---|---|---|---|
+| GH0608 | Asuogyaman | 1.1 | 0.9 |
+| GH0624 | Lower Manya | 0.5 | 0.1 |
+| GH0705 | Ada East | 5.8 | 8.8 |
+| GH0706 | Ada West | 1.7 | 16.1 |
+| GH0726 | Shai Osudoku | 5.8 | 1.1 |
+| GH1407 | Central Tongu | 4.1 | 4.2 |
+| GH1416 | North Tongu | 11.7 | 5.9 |
+| GH1418 | South Tongu | 7.7 | 3.0 |
+| | **Total** | **38.4** | **40.1** |
+
+Interpretation: observed new water is best reported as a **range of ~38–78 km²**. The lower bound counts only attributable flooding; the upper bound adds new water in places that historically held water at least 10% of the time (JRC GSW occurrence). In Ada West the ambiguous class is dominated by the Songor lagoon / salt-pan area; along the Tongu floodplain much of the ambiguous class may be genuine event flooding on ground that has flooded before. Both bounds are likely under-estimates (radar misses water under vegetation and among buildings).
 
 ### Required attribution strings
 - **D-01:** Ghana Statistical Service, via OCHA HDX (CC BY-IGO).
