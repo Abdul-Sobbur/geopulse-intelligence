@@ -124,3 +124,15 @@
     border-right: none; border-bottom: 1px solid #e4e7eb;
   }
 }
+
+/* ---- Proximity ---- */
+.btn {
+  font: inherit; font-size: 13px; width: 100%;
+  padding: 7px 10px; border-radius: 4px; cursor: pointer;
+  border: 1px solid #1f78b4; background: #1f78b4; color: #ffffff;
+}
+.btn:hover { background: #17649a; }
+.btn:focus-visible { outline: 2px solid #1f2933; outline-offset: 2px; }
+.btn-active { background: #1f2933; border-color: #1f2933; }
+.btn-secondary { background: #ffffff; color: #1f78b4; margin-top: 6px; }
+.btn-secondary:hover { background: #f5f7fa; }

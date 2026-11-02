@@ -110,6 +110,53 @@ const SETTLEMENT_STATUS_LABELS: Record<string, string> = {
 
 type SummaryRow = { asset_type: string; total: number; in_flood: number; in_ambiguous: number; near: number };
 
+type ProximityFeature = {
+  kind: "asset" | "settlement";
+  id: number;
+  type: string;
+  label: string;
+  category: string;
+  name: string | null;
+  adm2_pcode: string | null;
+  building_count: number | null;
+  distance_m: number;
+  lon: number;
+  lat: number;
+};
+
+type ProximitySummary = { kind: string; type: string; label: string; count: number; buildings: number | null };
+
+type ProximityResponse = {
+  center: [number, number];
+  radius_m: number;
+  district: { pcode: string; name: string } | null;
+  hazard: { hazard_id: string; flooded_m2: number; ambiguous_m2: number } | null;
+  total: number;
+  summary: ProximitySummary[];
+  features: ProximityFeature[];
+};
+
+const RADIUS_OPTIONS = [250, 500, 1000, 2000, 5000];
+
+function formatDistance(m: number): string {
+  return m >= 1000 ? `${m / 1000} km` : `${m} m`;
+}
+
+// Approximate circle (as a polygon ring) of a given radius in metres around a point
+function circleRing(lon: number, lat: number, radiusM: number, steps = 72): [number, number][] {
+  const ring: [number, number][] = [];
+  const metresPerDegLat = 110_574;
+  const metresPerDegLon = 111_320 * Math.cos((lat * Math.PI) / 180);
+  for (let i = 0; i <= steps; i++) {
+    const angle = (2 * Math.PI * i) / steps;
+    ring.push([
+      lon + (radiusM * Math.cos(angle)) / metresPerDegLon,
+      lat + (radiusM * Math.sin(angle)) / metresPerDegLat,
+    ]);
+  }
+  return ring;
+}
+
 function expr(value: unknown): ExpressionSpecification {
   return value as ExpressionSpecification;
 }
@@ -274,6 +321,8 @@ export default function App() {
   const districtNamesRef = useRef(new Map<string, string>());
   const screeningRef = useRef(new Map<number, ScreeningAsset>());
   const settlementScreeningRef = useRef(new Map<number, SettlementScreening>());
+  const pickModeRef = useRef(false);
+  const radiusRef = useRef(1000);
 
   const [assetTypes, setAssetTypes] = useState<AssetType[]>([]);
   const [assetsData, setAssetsData] = useState<FeatureCollection | null>(null);
@@ -290,6 +339,10 @@ export default function App() {
   const [screening, setScreening] = useState<ScreeningResponse | null>(null);
   const [settlementsLoaded, setSettlementsLoaded] = useState(false);
   const [settlementScreening, setSettlementScreening] = useState<SettlementScreening[] | null>(null);
+  const [pickMode, setPickMode] = useState(false);
+  const [radiusM, setRadiusM] = useState(1000);
+  const [proximity, setProximity] = useState<ProximityResponse | null>(null);
+  const [proximityLoading, setProximityLoading] = useState(false);
 
   function showPopup(lngLat: maplibregl.LngLatLike, properties: Record<string, unknown>) {
     const map = mapRef.current;
@@ -300,6 +353,65 @@ export default function App() {
       .setLngLat(lngLat)
       .setHTML(popupHtml(properties, warningByTypeRef.current, districtNamesRef.current, screeningInfo))
       .addTo(map);
+  }
+
+  // Query everything within the chosen radius of a point and draw the search circle
+  async function runProximity(lon: number, lat: number) {
+    const map = mapRef.current;
+    if (!map) return;
+    pickModeRef.current = false;
+    setPickMode(false);
+    const radius = radiusRef.current;
+
+    const source = map.getSource("proximity") as maplibregl.GeoJSONSource | undefined;
+    source?.setData({
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          properties: { role: "area" },
+          geometry: { type: "Polygon", coordinates: [circleRing(lon, lat, radius)] },
+        },
+        {
+          type: "Feature",
+          properties: { role: "centre" },
+          geometry: { type: "Point", coordinates: [lon, lat] },
+        },
+      ],
+    });
+
+    setProximityLoading(true);
+    try {
+      const data = await fetchJson(
+        `${API_URL}/proximity?lon=${lon.toFixed(6)}&lat=${lat.toFixed(6)}` +
+        `&radius_m=${radius}&hazard_id=${HAZARD_ID}&limit=100`,
+      );
+      setProximity(data as ProximityResponse);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProximityLoading(false);
+    }
+  }
+
+  function clearProximity() {
+    setProximity(null);
+    const source = mapRef.current?.getSource("proximity") as maplibregl.GeoJSONSource | undefined;
+    source?.setData({ type: "FeatureCollection", features: [] });
+  }
+
+  function changeRadius(value: number) {
+    setRadiusM(value);
+    radiusRef.current = value;
+    if (proximity) runProximity(proximity.center[0], proximity.center[1]);
+  }
+
+  function togglePickMode() {
+    const next = !pickMode;
+    pickModeRef.current = next;
+    setPickMode(next);
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = next ? "crosshair" : "";
   }
 
   // Create the map and load data once
@@ -397,6 +509,7 @@ export default function App() {
 
           // Settlement popup, unless an asset was clicked at the same spot
           map.on("click", "settlement-fill", (e) => {
+            if (pickModeRef.current) return;
             const assetHits = map.queryRenderedFeatures(e.point, { layers: Object.keys(LAYER_TYPES) });
             if (assetHits.length) return;
             const feature = e.features?.[0];
@@ -410,8 +523,12 @@ export default function App() {
               ))
               .addTo(map);
           });
-          map.on("mouseenter", "settlement-fill", () => { map.getCanvas().style.cursor = "pointer"; });
-          map.on("mouseleave", "settlement-fill", () => { map.getCanvas().style.cursor = ""; });
+          map.on("mouseenter", "settlement-fill", () => {
+            if (!pickModeRef.current) map.getCanvas().style.cursor = "pointer";
+          });
+          map.on("mouseleave", "settlement-fill", () => {
+            if (!pickModeRef.current) map.getCanvas().style.cursor = "";
+          });
         }
 
         map.addLayer({
@@ -463,12 +580,43 @@ export default function App() {
         // Click an asset to see its details, provenance and screening status
         for (const layerId of Object.keys(LAYER_TYPES)) {
           map.on("click", layerId, (e) => {
+            if (pickModeRef.current) return;
             const feature = e.features?.[0];
             if (feature) showPopup(e.lngLat, feature.properties as Record<string, unknown>);
           });
-          map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer"; });
-          map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; });
+          map.on("mouseenter", layerId, () => {
+            if (!pickModeRef.current) map.getCanvas().style.cursor = "pointer";
+          });
+          map.on("mouseleave", layerId, () => {
+            if (!pickModeRef.current) map.getCanvas().style.cursor = "";
+          });
         }
+
+        // Proximity search circle (drawn on top of everything)
+        map.addSource("proximity", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+        map.addLayer({
+          id: "proximity-fill", type: "fill", source: "proximity",
+          filter: ["==", ["get", "role"], "area"] as unknown as FilterSpecification,
+          paint: { "fill-color": "#1f2933", "fill-opacity": 0.06 },
+        });
+        map.addLayer({
+          id: "proximity-line", type: "line", source: "proximity",
+          filter: ["==", ["get", "role"], "area"] as unknown as FilterSpecification,
+          paint: { "line-color": "#1f2933", "line-width": 2, "line-dasharray": [2, 2] },
+        });
+        map.addLayer({
+          id: "proximity-centre", type: "circle", source: "proximity",
+          filter: ["==", ["get", "role"], "centre"] as unknown as FilterSpecification,
+          paint: {
+            "circle-radius": 6, "circle-color": "#1f2933",
+            "circle-stroke-color": "#ffffff", "circle-stroke-width": 2,
+          },
+        });
+
+        // In "pick a point" mode, any click on the map runs a proximity search there
+        map.on("click", (e) => {
+          if (pickModeRef.current) runProximity(e.lngLat.lng, e.lngLat.lat);
+        });
 
         setAssetTypes(typeList);
         setAssetsData(assetsFc as FeatureCollection);
@@ -651,6 +799,17 @@ export default function App() {
     showPopup(anchorPoint(feature.geometry), feature.properties);
   }
 
+  function openProximityFeature(f: ProximityFeature) {
+    if (f.kind === "asset") {
+      const feature = assetsData?.features.find((a) => a.properties.asset_id === f.id);
+      if (feature) {
+        openFeature(feature);
+        return;
+      }
+    }
+    mapRef.current?.flyTo({ center: [f.lon, f.lat], zoom: 15 });
+  }
+
   function toggleCategory(category: string) {
     setHiddenCategories((current) =>
       current.includes(category)
@@ -719,6 +878,92 @@ export default function App() {
                 )}
               </ul>
             )}
+
+            <section className="section">
+              <h2 className="section-title">What's nearby? · proximity</h2>
+
+              <label className="field inline">
+                <span>Radius</span>
+                <select value={radiusM} onChange={(e) => changeRadius(Number(e.target.value))}>
+                  {RADIUS_OPTIONS.map((m) => (
+                    <option key={m} value={m}>{formatDistance(m)}</option>
+                  ))}
+                </select>
+              </label>
+
+              <button type="button" className={`btn${pickMode ? " btn-active" : ""}`} onClick={togglePickMode}>
+                {pickMode ? "Click the map to choose a point (or cancel)" : "Pick a point on the map"}
+              </button>
+
+              {proximityLoading && <p className="subtitle">Searching…</p>}
+
+              {proximity && !proximityLoading && (
+                <>
+                  <p className="counts-scope">
+                    Within {formatDistance(proximity.radius_m)} of {proximity.center[1].toFixed(4)},{" "}
+                    {proximity.center[0].toFixed(4)}
+                    {proximity.district ? ` · ${proximity.district.name}` : " · outside mapped districts"}
+                  </p>
+
+                  {proximity.total === 0 && <p className="subtitle">Nothing mapped within this radius.</p>}
+
+                  {proximity.summary.length > 0 && (
+                    <table className="summary-table">
+                      <thead>
+                        <tr><th>Type</th><th>Count</th></tr>
+                      </thead>
+                      <tbody>
+                        {proximity.summary.map((s) => (
+                          <tr key={`${s.kind}-${s.type}`}>
+                            <td>{s.kind === "settlement" ? `${s.label} (footprint)` : s.label}</td>
+                            <td>
+                              {s.count}
+                              {s.buildings ? ` · ${s.buildings.toLocaleString()} bldgs` : ""}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {proximity.hazard && (proximity.hazard.flooded_m2 > 0 || proximity.hazard.ambiguous_m2 > 0) && (
+                    <p className="subtitle">
+                      Observed new water (Oct 2023) inside the circle:{" "}
+                      {(proximity.hazard.flooded_m2 / 10_000).toFixed(1)} ha flooding,{" "}
+                      {(proximity.hazard.ambiguous_m2 / 10_000).toFixed(1)} ha ambiguous.
+                    </p>
+                  )}
+
+                  {proximity.features.length > 0 && (
+                    <ul className="results">
+                      {proximity.features.map((f) => (
+                        <li key={`${f.kind}-${f.id}`}>
+                          <button type="button" onClick={() => openProximityFeature(f)}>
+                            <strong>
+                              {f.name ?? (f.kind === "settlement" ? `${f.label} footprint` : "(unnamed)")}
+                            </strong>
+                            <span>{f.label} · {Math.round(f.distance_m)} m</span>
+                          </button>
+                        </li>
+                      ))}
+                      {proximity.total > proximity.features.length && (
+                        <li className="empty">
+                          Showing nearest {proximity.features.length} of {proximity.total}.
+                        </li>
+                      )}
+                    </ul>
+                  )}
+
+                  <p className="hint">
+                    Straight-line (geodesic) distance to the nearest edge of each feature, not travel
+                    distance. Settlement building counts cover whole settlements.
+                  </p>
+                  <button type="button" className="btn btn-secondary" onClick={clearProximity}>
+                    Clear
+                  </button>
+                </>
+              )}
+            </section>
 
             {hazard && (
               <section className="section">

@@ -325,3 +325,100 @@ def settlements(
     """)
     with engine.connect() as conn:
         return conn.execute(sql, params).scalar()
+
+
+# ---------------------------------------------------------------- proximity
+
+# The click point, built from bound parameters (never from user text pasted into SQL)
+_POINT = "ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)"
+
+
+@app.get("/proximity", tags=["proximity"])
+def proximity(
+    lon: float = Query(..., ge=-180, le=180, description="Longitude of the point (WGS84)"),
+    lat: float = Query(..., ge=-90, le=90, description="Latitude of the point (WGS84)"),
+    radius_m: float = Query(1000, ge=10, le=10000, description="Search radius in metres"),
+    hazard_id: str = Query("flood_2023_observed", description="Hazard layer to summarise inside the radius"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum features listed (summary counts use all)"),
+):
+    """Everything mapped within a straight-line (geodesic) distance of a point.
+
+    Returns assets and settlement footprints sorted by distance to their nearest edge,
+    counts by type, the district containing the point, and the area of observed hazard
+    water inside the radius. Distances are not travel distances.
+    """
+    # Bounding-box margin in degrees for the index pre-filter (generous: 1 degree ~ 111 km)
+    params = {
+        "lon": lon, "lat": lat, "r": radius_m, "deg": radius_m / 111_000 * 1.5,
+        "hid": hazard_id,
+    }
+
+    features_sql = text(f"""
+        SELECT 'asset' AS kind, a.asset_id AS id, a.asset_type AS type, t.label, t.category,
+               a.name, a.adm2_pcode, NULL::bigint AS building_count,
+               round(ST_Distance(a.geom::geography, {_POINT}::geography)::numeric, 1)::float8 AS distance_m,
+               ST_X(ST_ClosestPoint(a.geom, {_POINT})) AS lon,
+               ST_Y(ST_ClosestPoint(a.geom, {_POINT})) AS lat
+        FROM assets a
+        JOIN asset_types t USING (asset_type)
+        WHERE a.geom && ST_Expand({_POINT}, :deg)
+          AND ST_DWithin(a.geom::geography, {_POINT}::geography, :r)
+        UNION ALL
+        SELECT 'settlement' AS kind, s.settlement_id AS id, s.settlement_type AS type,
+               s.settlement_type AS label, 'settlement' AS category,
+               NULL::text AS name, s.adm2_pcode, s.building_count::bigint,
+               round(ST_Distance(s.geom::geography, {_POINT}::geography)::numeric, 1)::float8 AS distance_m,
+               ST_X(ST_ClosestPoint(s.geom, {_POINT})) AS lon,
+               ST_Y(ST_ClosestPoint(s.geom, {_POINT})) AS lat
+        FROM settlements s
+        WHERE s.geom && ST_Expand({_POINT}, :deg)
+          AND ST_DWithin(s.geom::geography, {_POINT}::geography, :r)
+        ORDER BY distance_m
+    """)
+
+    district_sql = text(f"""
+        SELECT pcode, name FROM admin_boundaries
+        WHERE ST_Contains(geom, {_POINT})
+        LIMIT 1
+    """)
+
+    hazard_sql = text(f"""
+        WITH buf AS (SELECT ST_Buffer({_POINT}::geography, :r)::geometry AS g)
+        SELECT f.class_name, sum(ST_Area(ST_Intersection(f.geom, buf.g)::geography)) AS m2
+        FROM hazard_features f, buf
+        WHERE f.hazard_id = :hid AND f.geom && buf.g AND ST_Intersects(f.geom, buf.g)
+        GROUP BY f.class_name
+    """)
+
+    with engine.connect() as conn:
+        rows = [dict(r) for r in conn.execute(features_sql, params).mappings()]
+        district = conn.execute(district_sql, params).mappings().first()
+        hazard_rows = conn.execute(hazard_sql, params).mappings().all()
+
+    summary = {}
+    for r in rows:
+        s = summary.setdefault((r["kind"], r["type"]), {
+            "kind": r["kind"], "type": r["type"], "label": r["label"], "count": 0,
+            "buildings": 0 if r["kind"] == "settlement" else None,
+        })
+        s["count"] += 1
+        if r["kind"] == "settlement":
+            s["buildings"] += int(r["building_count"] or 0)
+
+    hazard_m2 = {h["class_name"]: float(h["m2"] or 0) for h in hazard_rows}
+
+    return {
+        "center": [lon, lat],
+        "radius_m": radius_m,
+        "district": dict(district) if district else None,
+        "hazard": {
+            "hazard_id": hazard_id,
+            "flooded_m2": round(hazard_m2.get("flooded", 0.0)),
+            "ambiguous_m2": round(hazard_m2.get("ambiguous", 0.0)),
+        },
+        "total": len(rows),
+        "summary": sorted(summary.values(), key=lambda s: -s["count"]),
+        "features": rows[:limit],
+        "note": "Straight-line (geodesic) distances to the nearest edge of each feature, not travel "
+                "distance. Settlement building counts cover whole settlements.",
+    }
