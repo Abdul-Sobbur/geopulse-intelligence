@@ -248,3 +248,80 @@ def screening(
         "summary": list(summary.values()),
         "assets": rows,
     }
+
+
+@app.get("/screening/{hazard_id}/settlements", tags=["screening"])
+def settlement_screening(
+    hazard_id: str,
+    near_m: float = Query(250, ge=0, le=5000, description="Distance in metres that counts as 'near'"),
+):
+    """Preliminary flood status of every settlement footprint (GRID3).
+
+    Statuses: in_flood (footprint intersects attributable flood), in_ambiguous, near, not_flagged.
+    building_count covers the whole settlement, not only the part near water.
+    """
+    sql = text("""
+        SELECT s.settlement_id, s.adm2_pcode, s.settlement_type, s.building_count,
+               CASE
+                   WHEN r.flooded_m2 > 0 THEN 'in_flood'
+                   WHEN r.ambiguous_m2 > 0 THEN 'in_ambiguous'
+                   WHEN r.dist_m <= :near THEN 'near'
+                   ELSE 'not_flagged'
+               END AS status,
+               round(r.dist_m::numeric, 1)::float8 AS distance_m,
+               round(r.flooded_m2::numeric)::float8 AS flooded_m2
+        FROM settlement_hazard_screening r
+        JOIN settlements s USING (settlement_id)
+        WHERE r.hazard_id = :hid
+        ORDER BY s.settlement_id
+    """)
+    with engine.connect() as conn:
+        _require_hazard(conn, hazard_id)
+        rows = [dict(r) for r in conn.execute(sql, {"hid": hazard_id, "near": near_m}).mappings()]
+    return {
+        "hazard_id": hazard_id,
+        "near_m": near_m,
+        "note": "Preliminary screening only. building_count covers the whole settlement and is "
+                "not a count of flooded buildings. Radar under-detects water among buildings.",
+        "settlements": rows,
+    }
+
+
+# ---------------------------------------------------------------- settlements
+
+@app.get("/settlements", tags=["settlements"])
+def settlements(
+    pcode: str | None = Query(None, max_length=20, description="District P-code, e.g. GH1416"),
+):
+    """GRID3 settlement footprints as GeoJSON, lightly simplified for display."""
+    where, params = "", {}
+    if pcode:
+        where, params = "WHERE adm2_pcode = :pcode", {"pcode": pcode}
+    sql = text(f"""
+        WITH sel AS (
+            SELECT settlement_id, settlement_type, building_count, building_area_m2,
+                   probability, data_year, adm2_pcode, source_id, source_ref,
+                   ST_SimplifyPreserveTopology(geom, 0.00005) AS geom
+            FROM settlements
+            {where}
+        )
+        SELECT json_build_object(
+            'type', 'FeatureCollection',
+            'features', COALESCE(json_agg(json_build_object(
+                'type', 'Feature',
+                'id', settlement_id,
+                'geometry', ST_AsGeoJSON(geom, 5)::json,
+                'properties', json_build_object(
+                    'settlement_id', settlement_id, 'settlement_type', settlement_type,
+                    'building_count', building_count,
+                    'building_area_m2', round(building_area_m2::numeric),
+                    'probability', round(probability::numeric, 3),
+                    'data_year', data_year, 'adm2_pcode', adm2_pcode,
+                    'source_id', source_id, 'source_ref', source_ref
+                )
+            )), '[]'::json)
+        )
+        FROM sel
+    """)
+    with engine.connect() as conn:
+        return conn.execute(sql, params).scalar()

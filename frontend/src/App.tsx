@@ -89,6 +89,25 @@ type ScreeningAsset = {
 
 type ScreeningResponse = { hazard_id: string; near_m: number; assets: ScreeningAsset[] };
 
+type SettlementScreening = {
+  settlement_id: number;
+  adm2_pcode: string | null;
+  settlement_type: string;
+  building_count: number | null;
+  status: string;
+  distance_m: number | null;
+  flooded_m2: number | null;
+};
+
+type SettlementScreeningResponse = { settlements: SettlementScreening[] };
+
+const SETTLEMENT_STATUS_LABELS: Record<string, string> = {
+  in_flood: "Footprint intersects observed flood",
+  in_ambiguous: "Footprint intersects ambiguous seasonal water",
+  near: "Near observed water",
+  not_flagged: "Not flagged",
+};
+
 type SummaryRow = { asset_type: string; total: number; in_flood: number; in_ambiguous: number; near: number };
 
 function expr(value: unknown): ExpressionSpecification {
@@ -120,6 +139,13 @@ function layerFilter(types: string[], hidden: string[], pcode: string): FilterSp
     ["in", ["get", "asset_type"], ["literal", types]],
     ["!", ["in", ["get", "category"], ["literal", hidden]]],
   ];
+  if (pcode) conditions.push(["==", ["get", "adm2_pcode"], pcode]);
+  return ["all", ...conditions] as unknown as FilterSpecification;
+}
+
+// Filter for settlement footprints: follows the 'settlement' category toggle and the district
+function settlementFilter(hidden: string[], pcode: string): FilterSpecification {
+  const conditions: unknown[] = [!hidden.includes("settlement")];
   if (pcode) conditions.push(["==", ["get", "adm2_pcode"], pcode]);
   return ["all", ...conditions] as unknown as FilterSpecification;
 }
@@ -205,6 +231,40 @@ function popupHtml(
     </div>`;
 }
 
+function settlementPopupHtml(
+  p: Record<string, unknown>,
+  districtNames: Map<string, string>,
+  screening?: SettlementScreening,
+): string {
+  const pcode = text(p.adm2_pcode);
+  const district = pcode ? `${districtNames.get(pcode) ?? ""} (${pcode})` : "–";
+  const buildings = Number(p.building_count ?? 0).toLocaleString();
+  const probability = p.probability === null || p.probability === undefined
+    ? "–"
+    : Number(p.probability).toFixed(2);
+
+  let screeningLine = "";
+  if (screening) {
+    const parts = [SETTLEMENT_STATUS_LABELS[screening.status] ?? screening.status];
+    if (screening.flooded_m2) {
+      parts.push(`${Math.round(screening.flooded_m2).toLocaleString()} m² inside observed flood`);
+    } else if (screening.distance_m !== null && screening.distance_m > 0) {
+      parts.push(`${Math.round(screening.distance_m)} m from observed water`);
+    }
+    screeningLine = `<p><strong>Flood screening:</strong> ${escapeHtml(parts.join(" · "))}</p>`;
+  }
+
+  return `
+    <div class="popup">
+      <h3>${escapeHtml(text(p.settlement_type) ?? "Settlement")}</h3>
+      <p>Settlement footprint · ${escapeHtml(buildings)} buildings · GRID3 probability ${escapeHtml(probability)}</p>
+      <p>District: ${escapeHtml(district)}</p>
+      ${screeningLine}
+      <p>Source: ${escapeHtml(text(p.source_id) ?? "")} · GRID3 GHA Settlement Extents v3.0 · ${escapeHtml(text(p.source_ref) ?? "")} · ${escapeHtml(text(p.data_year) ?? "")}</p>
+      <p class="warning">⚠ The building count covers the whole settlement, not only the part near water.</p>
+    </div>`;
+}
+
 export default function App() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -213,6 +273,7 @@ export default function App() {
   const warningByTypeRef = useRef(new Map<string, string | null>());
   const districtNamesRef = useRef(new Map<string, string>());
   const screeningRef = useRef(new Map<number, ScreeningAsset>());
+  const settlementScreeningRef = useRef(new Map<number, SettlementScreening>());
 
   const [assetTypes, setAssetTypes] = useState<AssetType[]>([]);
   const [assetsData, setAssetsData] = useState<FeatureCollection | null>(null);
@@ -227,6 +288,8 @@ export default function App() {
   const [screeningOn, setScreeningOn] = useState(false);
   const [nearM, setNearM] = useState(250);
   const [screening, setScreening] = useState<ScreeningResponse | null>(null);
+  const [settlementsLoaded, setSettlementsLoaded] = useState(false);
+  const [settlementScreening, setSettlementScreening] = useState<SettlementScreening[] | null>(null);
 
   function showPopup(lngLat: maplibregl.LngLatLike, properties: Record<string, unknown>) {
     const map = mapRef.current;
@@ -255,13 +318,14 @@ export default function App() {
 
     map.on("load", async () => {
       try {
-        const [districtsFc, assetsFc, types, hazardList, floodFc] = await Promise.all([
+        const [districtsFc, assetsFc, types, hazardList, floodFc, settlementsFc] = await Promise.all([
           fetchJson(`${API_URL}/pilots/${PILOT_ID}/districts`),
           fetchJson(`${API_URL}/assets?limit=5000`),
           fetchJson(`${API_URL}/asset-types`),
-          // Hazard data is optional: the asset map still works without it
+          // Hazard and settlement data are optional: the asset map still works without them
           fetchJson(`${API_URL}/hazards`).catch(() => null),
           fetchJson(`${API_URL}/hazards/${HAZARD_ID}/features`).catch(() => null),
+          fetchJson(`${API_URL}/settlements`).catch(() => null),
         ]);
         const typeList = types as AssetType[];
 
@@ -302,6 +366,52 @@ export default function App() {
               "fill-opacity": 0.6,
             },
           });
+        }
+
+        if (settlementsFc) {
+          const settlementColour = expr([
+            "match", STATUS,
+            "in_flood", STATUS_COLOURS.in_flood,
+            "in_ambiguous", STATUS_COLOURS.in_ambiguous,
+            "near", STATUS_COLOURS.near,
+            CATEGORY_COLOURS.settlement,
+          ]);
+          map.addSource("settlements", { type: "geojson", data: settlementsFc });
+          map.addLayer({
+            id: "settlement-fill", type: "fill", source: "settlements",
+            filter: settlementFilter([], ""),
+            paint: {
+              "fill-color": settlementColour,
+              "fill-opacity": expr(["match", STATUS, FLAGGED, 0.45, DIMMED, 0.08, 0.2]),
+            },
+          });
+          map.addLayer({
+            id: "settlement-outline", type: "line", source: "settlements",
+            filter: settlementFilter([], ""),
+            paint: {
+              "line-color": settlementColour,
+              "line-width": expr(["match", STATUS, FLAGGED, 1.5, 0.5]),
+              "line-opacity": expr(["match", STATUS, DIMMED, 0.2, 0.7]),
+            },
+          });
+
+          // Settlement popup, unless an asset was clicked at the same spot
+          map.on("click", "settlement-fill", (e) => {
+            const assetHits = map.queryRenderedFeatures(e.point, { layers: Object.keys(LAYER_TYPES) });
+            if (assetHits.length) return;
+            const feature = e.features?.[0];
+            if (!feature) return;
+            const p = feature.properties as Record<string, unknown>;
+            popupRef.current?.remove();
+            popupRef.current = new maplibregl.Popup({ maxWidth: "300px" })
+              .setLngLat(e.lngLat)
+              .setHTML(settlementPopupHtml(
+                p, districtNamesRef.current, settlementScreeningRef.current.get(Number(p.settlement_id)),
+              ))
+              .addTo(map);
+          });
+          map.on("mouseenter", "settlement-fill", () => { map.getCanvas().style.cursor = "pointer"; });
+          map.on("mouseleave", "settlement-fill", () => { map.getCanvas().style.cursor = ""; });
         }
 
         map.addLayer({
@@ -362,6 +472,7 @@ export default function App() {
 
         setAssetTypes(typeList);
         setAssetsData(assetsFc as FeatureCollection);
+        setSettlementsLoaded(!!settlementsFc);
         setHazard(
           ((hazardList as HazardLayer[] | null) ?? []).find((h) => h.hazard_id === HAZARD_ID) ?? null,
         );
@@ -395,6 +506,11 @@ export default function App() {
     for (const [layerId, types] of Object.entries(FILTERED_LAYERS)) {
       map.setFilter(layerId, layerFilter(types, hiddenCategories, selectedPcode));
     }
+    if (map.getLayer("settlement-fill")) {
+      const filter = settlementFilter(hiddenCategories, selectedPcode);
+      map.setFilter("settlement-fill", filter);
+      map.setFilter("settlement-outline", filter);
+    }
   }, [hiddenCategories, selectedPcode, mapReady]);
 
   // Highlight and zoom to the selected district (or back to the whole pilot)
@@ -420,22 +536,40 @@ export default function App() {
     const map = mapRef.current;
     if (!map || !mapReady) return;
     let cancelled = false;
+    const hasSettlements = !!map.getSource("settlements");
     map.removeFeatureState({ source: "assets" });
+    if (hasSettlements) map.removeFeatureState({ source: "settlements" });
     screeningRef.current = new Map();
+    settlementScreeningRef.current = new Map();
 
     if (!screeningOn) {
       setScreening(null);
+      setSettlementScreening(null);
       return;
     }
 
-    fetchJson(`${API_URL}/screening/${HAZARD_ID}?near_m=${nearM}`)
-      .then((data: ScreeningResponse) => {
+    Promise.all([
+      fetchJson(`${API_URL}/screening/${HAZARD_ID}?near_m=${nearM}`),
+      hasSettlements
+        ? fetchJson(`${API_URL}/screening/${HAZARD_ID}/settlements?near_m=${nearM}`).catch(() => null)
+        : Promise.resolve(null),
+    ])
+      .then(([data, settlementData]: [ScreeningResponse, SettlementScreeningResponse | null]) => {
         if (cancelled) return;
         screeningRef.current = new Map(data.assets.map((a) => [a.asset_id, a]));
         for (const a of data.assets) {
           map.setFeatureState({ source: "assets", id: a.asset_id }, { status: a.status });
         }
+        if (settlementData) {
+          settlementScreeningRef.current = new Map(
+            settlementData.settlements.map((s) => [s.settlement_id, s]),
+          );
+          for (const s of settlementData.settlements) {
+            map.setFeatureState({ source: "settlements", id: s.settlement_id }, { status: s.status });
+          }
+        }
         setScreening(data);
+        setSettlementScreening(settlementData ? settlementData.settlements : null);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -480,6 +614,17 @@ export default function App() {
       (x, y) => (y.in_flood + y.in_ambiguous + y.near) - (x.in_flood + x.in_ambiguous + x.near),
     );
   }, [screening, assetsData, selectedPcode]);
+
+  // Settlement footprint screening summary, respecting the district filter
+  const settlementSummary = useMemo(() => {
+    if (!settlementScreening) return null;
+    const rows = settlementScreening.filter((s) => !selectedPcode || s.adm2_pcode === selectedPcode);
+    return {
+      in_flood: rows.filter((s) => s.status === "in_flood").length,
+      in_ambiguous: rows.filter((s) => s.status === "in_ambiguous").length,
+      near: rows.filter((s) => s.status === "near").length,
+    };
+  }, [settlementScreening, selectedPcode]);
 
   // Name search, respecting the district and category filters
   const matches = useMemo(() => {
@@ -623,6 +768,14 @@ export default function App() {
                             </tr>
                           </thead>
                           <tbody>
+                            {settlementSummary && (
+                              <tr>
+                                <td><strong>Settlement footprints</strong></td>
+                                <td>{settlementSummary.in_flood}</td>
+                                <td>{settlementSummary.in_ambiguous}</td>
+                                <td>{settlementSummary.near}</td>
+                              </tr>
+                            )}
                             {screeningSummary.map((r) => (
                               <tr key={r.asset_type}>
                                 <td>{labelFor(r.asset_type)}</td>
@@ -658,7 +811,10 @@ export default function App() {
               </section>
             )}
 
-            <p className="hint">Click a category to show or hide it. Click a map feature for details.</p>
+            <p className="hint">
+              Click a category to show or hide it. Click a map feature for details.
+              {settlementsLoaded && " Settlement footprints (light purple) follow the settlement toggle."}
+            </p>
             <p className="counts-scope">Counts for {scopeLabel}</p>
           </>
         )}
@@ -702,7 +858,8 @@ export default function App() {
 
         <p className="notice">
           Preliminary screening information only. Assets: © OpenStreetMap contributors (ODbL),
-          snapshot 2026-10-31. Boundaries: Ghana Statistical Service via OCHA HDX. Flood layer:
+          snapshot 2026-10-31. Boundaries: Ghana Statistical Service via OCHA HDX. Settlement
+          footprints: GRID3 GHA Settlement Extents v3.0 (CIESIN, Columbia University, 2024). Flood layer:
           derived from Copernicus Sentinel-1 data (2023). Absence of a feature on this map is not
           evidence of absence on the ground.
         </p>
