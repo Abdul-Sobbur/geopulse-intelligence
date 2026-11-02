@@ -8,6 +8,7 @@ import html
 import io
 import json
 import math
+import os
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,10 +16,10 @@ from typing import Literal
 
 import numpy as np
 import rasterio
-from rasterio.windows import Window
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response
+from rasterio.windows import Window
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -26,7 +27,7 @@ from .db import engine
 
 app = FastAPI(
     title="GeoPulse Intelligence API",
-    version="0.4.0",
+    version="1.0.0",
     description=(
         "Spatial decision-support API. Pilot area: Lower Volta corridor, Ghana. "
         "All outputs are preliminary screening information, not engineering "
@@ -34,10 +35,15 @@ app = FastAPI(
     ),
 )
 
-# Allow our local frontend (Vite dev server) to call the API from the browser
+# Browser origins allowed to call the API: the Vite dev server by default; Docker sets CORS_ORIGINS
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["GET"],
     allow_headers=["*"],
 )
@@ -814,7 +820,7 @@ def screening_report(
 
 # Rasters written by scripts/download_site_rasters.py (backend/app/main.py -> project root)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-RASTER_DIR = PROJECT_ROOT / "data" / "processed" / "site_rasters"
+RASTER_DIR = Path(os.environ.get("RASTER_DIR", PROJECT_ROOT / "data" / "processed" / "site_rasters"))
 DEM_PATH = RASTER_DIR / "dem_glo30_pilot.tif"
 LANDCOVER_PATH = RASTER_DIR / "worldcover2021_pilot.tif"
 

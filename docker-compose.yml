@@ -1,0 +1,58 @@
+# GeoPulse Intelligence: database, API and web app in one command
+#
+#   1. Export your local database once (see README "Run with Docker"):
+#        pg_dump -U postgres -d geopulse --no-owner --no-privileges -f data/processed/db_dump/geopulse.sql
+#   2. docker compose up --build
+#   3. Open http://localhost:8080
+#
+# Settings come from .env (DB_PASSWORD is required). Data files stay outside Git under data/.
+
+services:
+  db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: ${DB_NAME:-geopulse}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Any .sql file here is loaded once, when the database is first created
+      - ./data/processed/db_dump:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5433:5432"   # 5433 on your computer, so it does not clash with a local PostgreSQL on 5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build: ./backend
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-geopulse}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD}
+      RASTER_DIR: /data/site_rasters
+      CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+    volumes:
+      - ./data/processed/site_rasters:/data/site_rasters:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:8000
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:

@@ -1,0 +1,8 @@
+# Runtime dependencies of the GeoPulse API (used by Docker and CI)
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0,<3
+psycopg[binary]>=3.2,<4
+python-dotenv>=1.0
+numpy>=2.0
+rasterio>=1.4

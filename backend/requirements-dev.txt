@@ -1,0 +1,4 @@
+# Test and lint tools (CI and local checks)
+pytest>=8
+httpx>=0.27
+ruff>=0.6

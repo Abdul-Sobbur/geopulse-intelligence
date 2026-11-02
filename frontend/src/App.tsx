@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import type {
   ExpressionSpecification,
   FilterSpecification,
+  GeoJSONSourceSpecification,
   Map as MapLibreMap,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -57,14 +58,36 @@ type AssetType = {
   count: number;
 };
 
-type Feature = {
-  type: "Feature";
-  id?: number;
-  geometry: { type: string; coordinates: any };
-  properties: Record<string, any>;
+// GeoJSON coordinates nest to any depth: [x, y], [[x, y], ...], [[[x, y], ...]], ...
+type NestedCoords = number[] | NestedCoords[];
+
+type Geometry = { type: string; coordinates: NestedCoords };
+
+type AssetProperties = {
+  asset_id: number;
+  asset_type: string;
+  category: string;
+  label: string;
+  subtype: string | null;
+  name: string | null;
+  adm2_pcode: string | null;
+  source_id: string;
+  source_ref: string;
+  source_date: string;
 };
 
-type FeatureCollection = { type: "FeatureCollection"; features: Feature[]; bbox?: Bounds };
+type DistrictProperties = { pcode: string; name: string; region: string };
+
+type Feature<P = AssetProperties> = { type: "Feature"; id?: number; geometry: Geometry; properties: P };
+
+// GeoJSON passed straight to a MapLibre source
+type SourceData = GeoJSONSourceSpecification["data"];
+
+type FeatureCollection<P = AssetProperties> = {
+  type: "FeatureCollection";
+  features: Feature<P>[];
+  bbox?: Bounds;
+};
 
 type District = { pcode: string; name: string; region: string; bounds: Bounds };
 
@@ -155,6 +178,16 @@ type ComparisonResponse = {
 const SITE_LETTERS = ["A", "B", "C", "D"];
 const SITE_RADIUS_OPTIONS = [250, 500, 1000, 2000, 5000];
 
+function comparisonQuery(sites: CandidateSite[], radiusM: number): string {
+  const siteParams = sites.map((s) => `site=${s.lon.toFixed(6)},${s.lat.toFixed(6)}`).join("&");
+  return `${siteParams}&radius_m=${radiusM}&hazard_id=${HAZARD_ID}`;
+}
+
+function dashboardQuery(nearM: number, pcode: string): string {
+  return `pilot_id=${PILOT_ID}&hazard_id=${HAZARD_ID}&near_m=${nearM}` +
+    (pcode ? `&pcode=${encodeURIComponent(pcode)}` : "");
+}
+
 function formatCriterion(value: string | number | null | undefined, unit: string): string {
   if (value === null || value === undefined || value === "") return "–";
   if (typeof value === "string") return value;
@@ -236,12 +269,13 @@ function settlementFilter(hidden: string[], pcode: string): FilterSpecification 
 // Bounding box of any GeoJSON geometry
 function geometryBounds(geometry: Feature["geometry"]): Bounds {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const visit = (coords: any): void => {
+  const visit = (coords: NestedCoords): void => {
     if (typeof coords[0] === "number") {
-      minX = Math.min(minX, coords[0]); minY = Math.min(minY, coords[1]);
-      maxX = Math.max(maxX, coords[0]); maxY = Math.max(maxY, coords[1]);
+      const [x, y] = coords as number[];
+      minX = Math.min(minX, x); minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
     } else {
-      for (const part of coords) visit(part);
+      for (const part of coords as NestedCoords[]) visit(part);
     }
   };
   visit(geometry.coordinates);
@@ -259,10 +293,10 @@ function anchorPoint(geometry: Feature["geometry"]): [number, number] {
   return [(minX + maxX) / 2, (minY + maxY) / 2];
 }
 
-async function fetchJson(url: string): Promise<any> {
+async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${response.status} ${response.statusText} — ${url}`);
-  return response.json();
+  return (await response.json()) as T;
 }
 
 // OSM names are user-entered text, so escape them before putting them into HTML
@@ -632,9 +666,12 @@ export default function App() {
   const [showFlood, setShowFlood] = useState(true);
   const [screeningOn, setScreeningOn] = useState(false);
   const [nearM, setNearM] = useState(250);
-  const [screening, setScreening] = useState<ScreeningResponse | null>(null);
+  const [screeningResult, setScreeningResult] = useState<{
+    key: string;
+    data: ScreeningResponse;
+    settlements: SettlementScreening[] | null;
+  } | null>(null);
   const [settlementsLoaded, setSettlementsLoaded] = useState(false);
-  const [settlementScreening, setSettlementScreening] = useState<SettlementScreening[] | null>(null);
   const [pickMode, setPickMode] = useState(false);
   const [radiusM, setRadiusM] = useState(1000);
   const [proximity, setProximity] = useState<ProximityResponse | null>(null);
@@ -642,11 +679,29 @@ export default function App() {
   const [pickTarget, setPickTarget] = useState<PickTarget>("proximity");
   const [sites, setSites] = useState<CandidateSite[]>([]);
   const [siteRadius, setSiteRadius] = useState(1000);
-  const [comparison, setComparison] = useState<ComparisonResponse | null>(null);
-  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [comparisonResult, setComparisonResult] = useState<{ key: string; data: ComparisonResponse } | null>(null);
   const [view, setView] = useState<"map" | "dashboard">("map");
-  const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
-  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardResult, setDashboardResult] = useState<{ key: string; data: DashboardResponse } | null>(null);
+
+  // Derived during render: a result is shown only if it matches the current settings
+  const screeningKey = String(nearM);
+  const currentScreening = screeningOn && screeningResult?.key === screeningKey ? screeningResult : null;
+  const screening = currentScreening?.data ?? null;
+  const settlementScreening = currentScreening?.settlements ?? null;
+
+  const comparisonKey = comparisonQuery(sites, siteRadius);
+  const comparison =
+    sites.length > 0 && comparisonResult?.key === comparisonKey ? comparisonResult.data : null;
+  const comparisonLoading = sites.length > 0 && comparison === null;
+
+  const dashboardKey = dashboardQuery(nearM, selectedPcode);
+  const dashboard = dashboardResult?.key === dashboardKey ? dashboardResult.data : null;
+  const dashboardLoading = view === "dashboard" && dashboard === null;
+
+  const districtNameByPcode = useMemo(
+    () => new Map(districts.map((d) => [d.pcode, d.name])),
+    [districts],
+  );
 
   function showPopup(lngLat: maplibregl.LngLatLike, properties: Record<string, unknown>) {
     const map = mapRef.current;
@@ -686,11 +741,11 @@ export default function App() {
 
     setProximityLoading(true);
     try {
-      const data = await fetchJson(
+      const data = await fetchJson<ProximityResponse>(
         `${API_URL}/proximity?lon=${lon.toFixed(6)}&lat=${lat.toFixed(6)}` +
         `&radius_m=${radius}&hazard_id=${HAZARD_ID}&limit=100`,
       );
-      setProximity(data as ProximityResponse);
+      setProximity(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -789,6 +844,12 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
+  // Map click while picking a point: runs a proximity search or adds a candidate site
+  const onMapPick = useEffectEvent((lng: number, lat: number) => {
+    if (pickTargetRef.current === "site") addSite(lng, lat);
+    else runProximity(lng, lat);
+  });
+
   // Create the map and load data once
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
@@ -805,25 +866,31 @@ export default function App() {
 
     map.on("load", async () => {
       try {
-        const [districtsFc, assetsFc, types, hazardList, floodFc, settlementsFc] = await Promise.all([
-          fetchJson(`${API_URL}/pilots/${PILOT_ID}/districts`),
-          fetchJson(`${API_URL}/assets?limit=5000`),
-          fetchJson(`${API_URL}/asset-types`),
+        const [districtsFc, assetsFc, typeList, hazardList, floodFc, settlementsFc]: [
+          FeatureCollection<DistrictProperties>,
+          FeatureCollection,
+          AssetType[],
+          HazardLayer[] | null,
+          SourceData | null,
+          SourceData | null,
+        ] = await Promise.all([
+          fetchJson<FeatureCollection<DistrictProperties>>(`${API_URL}/pilots/${PILOT_ID}/districts`),
+          fetchJson<FeatureCollection>(`${API_URL}/assets?limit=5000`),
+          fetchJson<AssetType[]>(`${API_URL}/asset-types`),
           // Hazard and settlement data are optional: the asset map still works without them
-          fetchJson(`${API_URL}/hazards`).catch(() => null),
-          fetchJson(`${API_URL}/hazards/${HAZARD_ID}/features`).catch(() => null),
-          fetchJson(`${API_URL}/settlements`).catch(() => null),
+          fetchJson<HazardLayer[]>(`${API_URL}/hazards`).catch(() => null),
+          fetchJson<SourceData>(`${API_URL}/hazards/${HAZARD_ID}/features`).catch(() => null),
+          fetchJson<SourceData>(`${API_URL}/settlements`).catch(() => null),
         ]);
-        const typeList = types as AssetType[];
 
         warningByTypeRef.current = new Map(typeList.map((t) => [t.asset_type, t.coverage_warning]));
         districtNamesRef.current = new Map(
-          (districtsFc as FeatureCollection).features.map((f) => [f.properties.pcode, f.properties.name]),
+          districtsFc.features.map((f) => [f.properties.pcode, f.properties.name]),
         );
-        pilotBoundsRef.current = districtsFc.bbox as Bounds;
+        pilotBoundsRef.current = districtsFc.bbox ?? null;
 
-        map.addSource("districts", { type: "geojson", data: districtsFc });
-        map.addSource("assets", { type: "geojson", data: assetsFc });
+        map.addSource("districts", { type: "geojson", data: districtsFc as unknown as SourceData });
+        map.addSource("assets", { type: "geojson", data: assetsFc as unknown as SourceData });
 
         // Layers are drawn in this order (first = bottom)
         map.addLayer({
@@ -1001,19 +1068,17 @@ export default function App() {
 
         // In "pick a point" mode, a click on the map runs a proximity search or adds a site
         map.on("click", (e) => {
-          if (!pickModeRef.current) return;
-          if (pickTargetRef.current === "site") addSite(e.lngLat.lng, e.lngLat.lat);
-          else runProximity(e.lngLat.lng, e.lngLat.lat);
+          if (pickModeRef.current) onMapPick(e.lngLat.lng, e.lngLat.lat);
         });
 
         setAssetTypes(typeList);
-        setAssetsData(assetsFc as FeatureCollection);
+        setAssetsData(assetsFc);
         setSettlementsLoaded(!!settlementsFc);
         setHazard(
-          ((hazardList as HazardLayer[] | null) ?? []).find((h) => h.hazard_id === HAZARD_ID) ?? null,
+          (hazardList ?? []).find((h) => h.hazard_id === HAZARD_ID) ?? null,
         );
         setDistricts(
-          (districtsFc as FeatureCollection).features
+          districtsFc.features
             .map((f) => ({
               pcode: f.properties.pcode,
               name: f.properties.name,
@@ -1078,19 +1143,18 @@ export default function App() {
     screeningRef.current = new Map();
     settlementScreeningRef.current = new Map();
 
-    if (!screeningOn) {
-      setScreening(null);
-      setSettlementScreening(null);
-      return;
-    }
+    if (!screeningOn) return;
 
+    const key = String(nearM);
     Promise.all([
-      fetchJson(`${API_URL}/screening/${HAZARD_ID}?near_m=${nearM}`),
+      fetchJson<ScreeningResponse>(`${API_URL}/screening/${HAZARD_ID}?near_m=${nearM}`),
       hasSettlements
-        ? fetchJson(`${API_URL}/screening/${HAZARD_ID}/settlements?near_m=${nearM}`).catch(() => null)
+        ? fetchJson<SettlementScreeningResponse>(
+          `${API_URL}/screening/${HAZARD_ID}/settlements?near_m=${nearM}`,
+        ).catch(() => null)
         : Promise.resolve(null),
     ])
-      .then(([data, settlementData]: [ScreeningResponse, SettlementScreeningResponse | null]) => {
+      .then(([data, settlementData]) => {
         if (cancelled) return;
         screeningRef.current = new Map(data.assets.map((a) => [a.asset_id, a]));
         for (const a of data.assets) {
@@ -1104,8 +1168,7 @@ export default function App() {
             map.setFeatureState({ source: "settlements", id: s.settlement_id }, { status: s.status });
           }
         }
-        setScreening(data);
-        setSettlementScreening(settlementData ? settlementData.settlements : null);
+        setScreeningResult({ key, data, settlements: settlementData ? settlementData.settlements : null });
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -1130,23 +1193,16 @@ export default function App() {
       })),
     });
 
-    if (sites.length === 0) {
-      setComparison(null);
-      return;
-    }
+    if (sites.length === 0) return;
 
     let cancelled = false;
-    const query = sites.map((s) => `site=${s.lon.toFixed(6)},${s.lat.toFixed(6)}`).join("&");
-    setComparisonLoading(true);
-    fetchJson(`${API_URL}/sites/compare?${query}&radius_m=${siteRadius}&hazard_id=${HAZARD_ID}`)
+    const key = comparisonQuery(sites, siteRadius);
+    fetchJson<ComparisonResponse>(`${API_URL}/sites/compare?${key}`)
       .then((data) => {
-        if (!cancelled) setComparison(data as ComparisonResponse);
+        if (!cancelled) setComparisonResult({ key, data });
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setComparisonLoading(false);
       });
 
     return () => {
@@ -1158,19 +1214,13 @@ export default function App() {
   useEffect(() => {
     if (view !== "dashboard") return;
     let cancelled = false;
-    setDashboardLoading(true);
-    const query =
-      `pilot_id=${PILOT_ID}&hazard_id=${HAZARD_ID}&near_m=${nearM}` +
-      (selectedPcode ? `&pcode=${encodeURIComponent(selectedPcode)}` : "");
-    fetchJson(`${API_URL}/dashboard?${query}`)
+    const key = dashboardQuery(nearM, selectedPcode);
+    fetchJson<DashboardResponse>(`${API_URL}/dashboard?${key}`)
       .then((data) => {
-        if (!cancelled) setDashboard(data as DashboardResponse);
+        if (!cancelled) setDashboardResult({ key, data });
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setDashboardLoading(false);
       });
     return () => {
       cancelled = true;
@@ -1328,7 +1378,7 @@ export default function App() {
                     <button type="button" onClick={() => openFeature(f)}>
                       <strong>{f.properties.name}</strong>
                       <span>
-                        {f.properties.label} · {districtNamesRef.current.get(f.properties.adm2_pcode) ?? ""}
+                        {f.properties.label} · {districtNameByPcode.get(f.properties.adm2_pcode ?? "") ?? ""}
                       </span>
                     </button>
                   </li>
