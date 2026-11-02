@@ -136,3 +136,10 @@
 .btn-active { background: #1f2933; border-color: #1f2933; }
 .btn-secondary { background: #ffffff; color: #1f78b4; margin-top: 6px; }
 .btn-secondary:hover { background: #f5f7fa; }
+
+/* ---- Report downloads ---- */
+.downloads { margin: 10px 0 4px; }
+.downloads .btn {
+  display: block; box-sizing: border-box; text-align: center;
+  text-decoration: none; margin-top: 6px;
+}

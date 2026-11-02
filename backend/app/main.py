@@ -3,8 +3,17 @@
 Run from the backend folder:  uvicorn app.main:app --reload
 Interactive docs:             http://127.0.0.1:8000/docs
 """
+import csv
+import html
+import io
+import json
+import zipfile
+from datetime import datetime, timezone
+from typing import Literal
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -12,7 +21,7 @@ from .db import engine
 
 app = FastAPI(
     title="GeoPulse Intelligence API",
-    version="0.2.0",
+    version="0.3.0",
     description=(
         "Spatial decision-support API. Pilot area: Lower Volta corridor, Ghana. "
         "All outputs are preliminary screening information, not engineering "
@@ -422,3 +431,375 @@ def proximity(
         "note": "Straight-line (geodesic) distances to the nearest edge of each feature, not travel "
                 "distance. Settlement building counts cover whole settlements.",
     }
+
+
+# ---------------------------------------------------------------- reports (Module 5)
+
+PILOT_LABEL = "Lower Volta corridor pilot, Ghana"
+
+STATUS_DEFINITIONS = {
+    "in_flood": "Touches observed new water attributable to the 2023 event (for settlements: the "
+                "footprint intersects it).",
+    "in_ambiguous": "Touches new water in a recurrent seasonal water body (e.g. lagoon, salt pans); "
+                    "not attributable to the event.",
+    "near": "Within the chosen distance of observed new water (either class) but not touching it.",
+    "not_flagged": "Not in or near observed new water. This does NOT mean the feature was unaffected.",
+    "context": "Water feature used as a reference layer, not an exposed asset.",
+}
+STATUS_ORDER = {"in_flood": 1, "in_ambiguous": 2, "near": 3, "not_flagged": 4, "context": 5}
+FLAGGED_STATUSES = ("in_flood", "in_ambiguous", "near")
+
+REPORT_COLUMNS = [
+    "record_type", "id", "type", "label", "category", "name", "adm2_pcode", "district_name",
+    "status", "distance_m", "flooded_length_m", "flooded_area_m2", "building_count",
+    "source_id", "source_ref", "source_date", "lon", "lat",
+]
+
+REPORT_CAVEATS = [
+    "Preliminary screening information only: not engineering certification, regulatory advice, "
+    "an official flood map or a damage assessment.",
+    "The flood layer shows water observed by Sentinel-1 radar on two dates; it is not peak extent "
+    "and is likely an under-estimate (radar misses water under vegetation and among buildings).",
+    "Distances are straight-line (geodesic) distances to the nearest edge of each feature, "
+    "not travel distances.",
+    "Settlement building counts cover the whole settlement; they are not counts of flooded buildings.",
+    "OpenStreetMap coverage of health facilities and power infrastructure in the pilot is sparse; "
+    "absence of a feature is not evidence of absence on the ground.",
+]
+
+
+def _report_rows(conn, hazard_id: str, near_m: float, pcode: str | None):
+    """Every screened asset and settlement, with its status for the chosen distance."""
+    where, params = "", {"hid": hazard_id, "near": near_m}
+    if pcode:
+        where, params["pcode"] = "WHERE u.adm2_pcode = :pcode", pcode
+    sql = text(f"""
+        WITH a AS (
+            SELECT 'asset' AS record_type, a.asset_id AS id, a.asset_type AS type, t.label,
+                   t.category, a.name, a.adm2_pcode,
+                   CASE
+                       WHEN t.category = 'water' THEN 'context'
+                       WHEN s.dist_flooded_m = 0 THEN 'in_flood'
+                       WHEN s.dist_ambiguous_m = 0 THEN 'in_ambiguous'
+                       WHEN LEAST(s.dist_flooded_m, s.dist_ambiguous_m) <= :near THEN 'near'
+                       ELSE 'not_flagged'
+                   END AS status,
+                   round(LEAST(s.dist_flooded_m, s.dist_ambiguous_m)::numeric, 1)::float8 AS distance_m,
+                   round(s.flooded_length_m::numeric, 1)::float8 AS flooded_length_m,
+                   NULL::float8 AS flooded_area_m2,
+                   NULL::bigint AS building_count,
+                   a.source_id, a.source_ref, a.source_date::text AS source_date,
+                   a.geom
+            FROM asset_hazard_screening s
+            JOIN assets a USING (asset_id)
+            JOIN asset_types t USING (asset_type)
+            WHERE s.hazard_id = :hid
+        ),
+        st AS (
+            SELECT 'settlement', st.settlement_id, st.settlement_type, st.settlement_type,
+                   'settlement', NULL::text, st.adm2_pcode,
+                   CASE
+                       WHEN r.flooded_m2 > 0 THEN 'in_flood'
+                       WHEN r.ambiguous_m2 > 0 THEN 'in_ambiguous'
+                       WHEN r.dist_m <= :near THEN 'near'
+                       ELSE 'not_flagged'
+                   END,
+                   round(r.dist_m::numeric, 1)::float8,
+                   NULL::float8,
+                   round(r.flooded_m2::numeric)::float8,
+                   st.building_count::bigint,
+                   st.source_id, st.source_ref, st.data_year::text,
+                   st.geom
+            FROM settlement_hazard_screening r
+            JOIN settlements st USING (settlement_id)
+            WHERE r.hazard_id = :hid
+        )
+        SELECT u.record_type, u.id, u.type, u.label, u.category, u.name, u.adm2_pcode,
+               b.name AS district_name, u.status, u.distance_m, u.flooded_length_m,
+               u.flooded_area_m2, u.building_count, u.source_id, u.source_ref, u.source_date,
+               round(ST_X(ST_PointOnSurface(u.geom))::numeric, 6)::float8 AS lon,
+               round(ST_Y(ST_PointOnSurface(u.geom))::numeric, 6)::float8 AS lat,
+               ST_AsGeoJSON(u.geom, 6) AS geojson
+        FROM (SELECT * FROM a UNION ALL SELECT * FROM st) u
+        LEFT JOIN admin_boundaries b ON b.pcode = u.adm2_pcode
+        {where}
+    """)
+    rows = [dict(r) for r in conn.execute(sql, params).mappings()]
+    rows.sort(key=lambda r: (
+        STATUS_ORDER.get(r["status"], 9),
+        r["distance_m"] if r["distance_m"] is not None else float("inf"),
+    ))
+    return rows
+
+
+def _summarise(rows):
+    """Counts by record type and type: total, in flood, in ambiguous, near (context excluded)."""
+    summary = {}
+    for r in rows:
+        if r["status"] == "context":
+            continue
+        s = summary.setdefault((r["record_type"], r["type"]), {
+            "record_type": r["record_type"], "type": r["type"], "label": r["label"],
+            "total": 0, "in_flood": 0, "in_ambiguous": 0, "near": 0,
+        })
+        s["total"] += 1
+        if r["status"] in FLAGGED_STATUSES:
+            s[r["status"]] += 1
+    return sorted(summary.values(), key=lambda s: (
+        s["record_type"] != "settlement", -(s["in_flood"] + s["in_ambiguous"] + s["near"]),
+    ))
+
+
+def _by_district(rows):
+    """Flagged settlements and assets per district."""
+    districts = {}
+    for r in rows:
+        if r["status"] not in FLAGGED_STATUSES:
+            continue
+        d = districts.setdefault(r["adm2_pcode"] or "unknown", {
+            "pcode": r["adm2_pcode"] or "unknown", "name": r["district_name"] or "",
+            "settlements_in_flood": 0, "settlements_ambiguous_or_near": 0, "assets_flagged": 0,
+        })
+        if r["record_type"] == "settlement":
+            key = "settlements_in_flood" if r["status"] == "in_flood" else "settlements_ambiguous_or_near"
+            d[key] += 1
+        else:
+            d["assets_flagged"] += 1
+    return sorted(districts.values(), key=lambda d: d["pcode"])
+
+
+def _report_metadata(conn, hazard_id: str, near_m: float, pcode: str | None):
+    layer = conn.execute(text("""
+        SELECT title, source_id, observed_dates, method, metadata
+        FROM hazard_layers WHERE hazard_id = :hid
+    """), {"hid": hazard_id}).mappings().first()
+    layer_meta = layer["metadata"] or {}
+    district_name = (
+        conn.execute(text("SELECT name FROM admin_boundaries WHERE pcode = :p"), {"p": pcode}).scalar()
+        if pcode else None
+    )
+    osm_snapshot = conn.execute(
+        text("SELECT max(source_date)::text FROM assets WHERE source_id = 'D-02'")
+    ).scalar()
+
+    return {
+        "title": "GeoPulse Intelligence: preliminary flood exposure screening",
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "software": f"GeoPulse Intelligence API {app.version}",
+        "scope": {
+            "area": f"{district_name} ({pcode})" if pcode else f"All districts in the {PILOT_LABEL}",
+            "near_distance_m": near_m,
+        },
+        "hazard": {
+            "hazard_id": hazard_id,
+            "title": layer["title"],
+            "source_id": layer["source_id"],
+            "observed_dates": layer["observed_dates"],
+            "method": layer["method"],
+            "pre_event_window": layer_meta.get("pre_event_window"),
+            "parameters": layer_meta.get("parameters"),
+            "limitations": layer_meta.get("limitations", []),
+        },
+        "status_definitions": STATUS_DEFINITIONS,
+        "data_sources": [
+            {"id": "D-01", "name": "Ghana Subnational Administrative Boundaries (COD-AB)",
+             "provider": "Ghana Statistical Service via OCHA HDX", "licence": "CC BY-IGO 3.0"},
+            {"id": "D-02", "name": f"OpenStreetMap Ghana extract (snapshot {osm_snapshot})",
+             "provider": "OpenStreetMap contributors via Geofabrik", "licence": "ODbL 1.0"},
+            {"id": "D-04", "name": "GRID3 GHA Settlement Extents v3.0",
+             "provider": "CIESIN, Columbia University (GRID3)",
+             "licence": "To be confirmed from the release notes"},
+            {"id": "D-08", "name": layer["title"],
+             "provider": "Derived in GeoPulse from Copernicus Sentinel-1 data (D-07)",
+             "licence": "Derived; contains modified Copernicus Sentinel data (2023)"},
+        ],
+        "caveats": REPORT_CAVEATS,
+    }
+
+
+REPORT_CSS = """
+body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1f2933;
+       max-width: 900px; margin: 24px auto; padding: 0 16px; line-height: 1.45; }
+h1 { font-size: 22px; margin-bottom: 4px; }
+h2 { font-size: 16px; margin-top: 28px; border-bottom: 1px solid #e4e7eb; padding-bottom: 4px; }
+.meta { color: #616e7c; font-size: 13px; }
+.banner { background: #fff8e1; border-left: 4px solid #f0b400; padding: 8px 12px; font-size: 13px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0; }
+th, td { border-bottom: 1px solid #e4e7eb; padding: 4px 6px; text-align: right; }
+th:first-child, td:first-child, td.text, th.text { text-align: left; }
+th { background: #f5f7fa; }
+ul { font-size: 13px; }
+.print { margin: 12px 0; padding: 6px 12px; font: inherit; cursor: pointer; }
+@media print { .print { display: none; } body { margin: 0; } }
+"""
+
+
+def _html_report(meta, summary, districts, rows) -> str:
+    e = lambda v: html.escape("" if v is None else str(v))  # noqa: E731
+    hz = meta["hazard"]
+
+    summary_rows = "".join(
+        f"<tr><td>{e(s['label'])}{' (footprint)' if s['record_type'] == 'settlement' else ''}</td>"
+        f"<td>{s['total']}</td><td>{s['in_flood']}</td><td>{s['in_ambiguous']}</td><td>{s['near']}</td></tr>"
+        for s in summary
+    )
+    district_rows = "".join(
+        f"<tr><td>{e(d['name'])} ({e(d['pcode'])})</td><td>{d['settlements_in_flood']}</td>"
+        f"<td>{d['settlements_ambiguous_or_near']}</td><td>{d['assets_flagged']}</td></tr>"
+        for d in districts
+    ) or '<tr><td colspan="4">No flagged features in scope.</td></tr>'
+
+    flagged = [r for r in rows if r["status"] in FLAGGED_STATUSES][:60]
+    feature_rows = "".join(
+        f"<tr><td>{e(r['name'] or (r['label'] + ' footprint' if r['record_type'] == 'settlement' else '(unnamed)'))}</td>"
+        f"<td class='text'>{e(r['label'])}</td><td class='text'>{e(r['district_name'])}</td>"
+        f"<td class='text'>{e(r['status'])}</td>"
+        f"<td>{'' if r['distance_m'] is None else round(r['distance_m'])}</td>"
+        f"<td>{'' if r['building_count'] is None else r['building_count']}</td></tr>"
+        for r in flagged
+    ) or '<tr><td colspan="6">No flagged features in scope.</td></tr>'
+
+    params = hz.get("parameters") or {}
+    param_items = "".join(
+        f"<li><strong>{e(k)}:</strong> {e(json.dumps(v) if isinstance(v, (dict, list)) else v)}</li>"
+        for k, v in params.items()
+    )
+    limitation_items = "".join(f"<li>{e(x)}</li>" for x in hz.get("limitations") or [])
+    caveat_items = "".join(f"<li>{e(x)}</li>" for x in meta["caveats"])
+    definition_items = "".join(
+        f"<li><strong>{e(k)}:</strong> {e(v)}</li>" for k, v in meta["status_definitions"].items()
+    )
+    source_rows = "".join(
+        f"<tr><td>{e(s['id'])}</td><td class='text'>{e(s['name'])}</td>"
+        f"<td class='text'>{e(s['provider'])}</td><td class='text'>{e(s['licence'])}</td></tr>"
+        for s in meta["data_sources"]
+    )
+    window = " to ".join(hz.get("pre_event_window") or [])
+
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{e(meta['title'])}</title><style>{REPORT_CSS}</style></head>
+<body>
+<h1>{e(meta['title'])}</h1>
+<p class="meta">Scope: {e(meta['scope']['area'])} · "Near" = within {e(meta['scope']['near_distance_m'])} m<br>
+Generated {e(meta['generated_at'])} (UTC) · {e(meta['software'])}</p>
+<p class="banner"><strong>Preliminary screening only.</strong> Proximity to observed water is not a measure
+of damage, and features that are not flagged are not confirmed safe. See caveats below.</p>
+<button class="print" onclick="window.print()">Print / Save as PDF</button>
+
+<h2>1. Summary</h2>
+<p>Hazard layer: {e(hz['title'])}, observed {e(hz['observed_dates'])}.</p>
+<table><tr><th class="text">Feature type</th><th>Screened</th><th>In flood</th><th>In ambiguous water</th><th>Near</th></tr>
+{summary_rows}</table>
+
+<h2>2. Flagged features by district</h2>
+<table><tr><th class="text">District</th><th>Settlements intersecting flood</th>
+<th>Settlements ambiguous / near</th><th>Assets flagged</th></tr>{district_rows}</table>
+
+<h2>3. Flagged features (nearest first, up to 60)</h2>
+<table><tr><th class="text">Name</th><th class="text">Type</th><th class="text">District</th>
+<th class="text">Status</th><th>Distance (m)</th><th>Buildings*</th></tr>{feature_rows}</table>
+<p class="meta">* Settlement building counts cover the whole settlement, not only the part near water.
+The full list is available in the CSV and GeoJSON exports.</p>
+
+<h2>4. Method</h2>
+<p>{e(hz['method'])}. Pre-event baseline: {e(window)}. Observation dates: {e(hz['observed_dates'])}.
+Source: {e(hz['source_id'])}.</p>
+<ul>{param_items}</ul>
+
+<h2>5. Status definitions</h2><ul>{definition_items}</ul>
+
+<h2>6. Limitations of the hazard layer</h2><ul>{limitation_items}</ul>
+
+<h2>7. Caveats for this report</h2><ul>{caveat_items}</ul>
+
+<h2>8. Data sources</h2>
+<table><tr><th class="text">ID</th><th class="text">Dataset</th><th class="text">Provider</th><th class="text">Licence</th></tr>
+{source_rows}</table>
+<p class="meta">© OpenStreetMap contributors. Contains modified Copernicus Sentinel data (2023).
+Settlement footprints: CIESIN, Columbia University (2024), GRID3 GHA Settlement Extents v3.0.</p>
+</body></html>"""
+
+
+@app.get("/reports/screening/{hazard_id}", tags=["reports"])
+def screening_report(
+    hazard_id: str,
+    fmt: Literal["html", "csv", "geojson"] = Query(
+        "html", alias="format", description="html (printable, save as PDF), csv (zip with metadata) or geojson",
+    ),
+    near_m: float = Query(250, ge=0, le=5000, description="Distance in metres that counts as 'near'"),
+    pcode: str | None = Query(None, max_length=20, description="Limit to one district P-code"),
+    include: Literal["flagged", "all"] = Query("flagged", description="Flagged features only, or everything screened"),
+):
+    """Download a screening report with its scope, date, sources, method and limitations (FR-06)."""
+    with engine.connect() as conn:
+        _require_hazard(conn, hazard_id)
+        rows = _report_rows(conn, hazard_id, near_m, pcode)
+        meta = _report_metadata(conn, hazard_id, near_m, pcode)
+
+    summary = _summarise(rows)
+    districts = _by_district(rows)
+    selected = [r for r in rows if include == "all" or r["status"] in FLAGGED_STATUSES]
+    meta["record_counts"] = {"screened": len(rows), "included": len(selected), "include": include}
+    meta["summary"] = summary
+    meta["by_district"] = districts
+
+    stem = f"geopulse_flood_screening_{pcode or 'pilot'}_{int(near_m)}m_{datetime.now(timezone.utc):%Y%m%d}"
+
+    if fmt == "html":
+        return HTMLResponse(_html_report(meta, summary, districts, selected))
+
+    if fmt == "geojson":
+        collection = {
+            "type": "FeatureCollection",
+            "metadata": meta,
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": json.loads(r["geojson"]),
+                    "properties": {c: r[c] for c in REPORT_COLUMNS},
+                }
+                for r in selected
+            ],
+        }
+        return Response(
+            json.dumps(collection),
+            media_type="application/geo+json",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.geojson"'},
+        )
+
+    # CSV: a zip containing the table, its metadata and a plain-text README
+    table = io.StringIO()
+    writer = csv.DictWriter(table, fieldnames=REPORT_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(selected)
+
+    readme = "\n".join([
+        meta["title"],
+        f"Scope: {meta['scope']['area']}; 'near' = within {near_m} m",
+        f"Generated: {meta['generated_at']} (UTC) by {meta['software']}",
+        f"Hazard layer: {meta['hazard']['title']} (observed {meta['hazard']['observed_dates']})",
+        "",
+        "Status definitions:",
+        *[f"  {k}: {v}" for k, v in STATUS_DEFINITIONS.items()],
+        "",
+        "Caveats:",
+        *[f"  - {c}" for c in REPORT_CAVEATS],
+        "",
+        "Data sources:",
+        *[f"  {s['id']}: {s['name']} ({s['provider']}; {s['licence']})" for s in meta["data_sources"]],
+        "",
+        "Full method, parameters and limitations: metadata.json",
+    ])
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{stem}.csv", table.getvalue().encode("utf-8-sig"))
+        zf.writestr("metadata.json", json.dumps(meta, indent=2))
+        zf.writestr("README.txt", readme)
+    return Response(
+        buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.zip"'},
+    )

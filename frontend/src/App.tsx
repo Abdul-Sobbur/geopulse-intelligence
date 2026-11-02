@@ -818,6 +818,11 @@ export default function App() {
     );
   }
 
+  // Report download link for the current distance and district selection
+  const reportUrl = (format: "html" | "csv" | "geojson") =>
+    `${API_URL}/reports/screening/${HAZARD_ID}?format=${format}&near_m=${nearM}` +
+    (selectedPcode ? `&pcode=${encodeURIComponent(selectedPcode)}` : "");
+
   const labelFor = (assetType: string) =>
     assetTypes.find((t) => t.asset_type === assetType)?.label ?? assetType;
 
@@ -1039,6 +1044,17 @@ export default function App() {
                     )}
                   </>
                 )}
+
+                <div className="downloads">
+                  <p className="counts-scope">
+                    Download report for {scopeLabel} · near = {formatDistance(nearM)}
+                  </p>
+                  <a className="btn btn-secondary" href={reportUrl("html")} target="_blank" rel="noopener">
+                    Printable report (save as PDF)
+                  </a>
+                  <a className="btn btn-secondary" href={reportUrl("csv")}>CSV + metadata (.zip)</a>
+                  <a className="btn btn-secondary" href={reportUrl("geojson")}>GeoJSON (for GIS)</a>
+                </div>
 
                 <details className="method">
                   <summary>Method &amp; limitations</summary>
