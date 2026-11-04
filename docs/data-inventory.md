@@ -95,6 +95,16 @@ Interpretation: the **count of settlements intersecting observed water** is the 
 
 ---
 
+## 2b. Wave 1 datasets (people and buildings)
+
+| ID | Dataset | Provider | Access route | Licence / terms | Temporal ref. | Resolution | Role in platform |
+|---|---|---|---|---|---|---|---|
+| D-09 | WorldPop Global2 population, R2025A v1 | WorldPop, University of Southampton | Earth Engine `WorldPop/GP/100m/R2025A/v1/pop`, country GHA, year 2023 | CC BY 4.0 | 2023 (annual series 2015-2030) | 100 m (3 arc-seconds) | Population per district and in observed flood water; the grid all Wave 1 rasters are aligned to |
+| D-10 | GHS-POP R2023A | European Commission, JRC | Earth Engine `JRC/GHSL/P2023A/GHS_POP/2020` and `/2025` | Free reuse with acknowledgement *(record exact terms)* | 2020 estimate and 2025 projection, linearly interpolated to 2023 | 100 m Mollweide, moved to the D-09 grid by density x cell area | Second, independent population model, so exposure is reported as a range |
+| D-11 | Google Open Buildings v3 | Google Research | Earth Engine `GOOGLE/Research/open-buildings/v3/polygons` | CC BY 4.0 | Imagery inference May 2023 | Building polygons, counted per 100 m cell by centroid | Buildings per district and in observed flood water, at confidence 0.65 and 0.75 |
+
+Produced by `scripts/download_people_rasters.py` (Earth Engine) and `scripts/people_exposure.py` (local), into the `district_indicators` table.
+
 ## 3. Known limitations (must be visible in the app)
 
 - **D-02/D-03 OSM:** completeness varies by area; a missing road, facility or power line is not proof of absence. Attribute quality is uneven.
@@ -102,6 +112,8 @@ Interpretation: the **count of settlements intersecting observed water** is the 
 - **D-04 GRID3:** settlement extents are modelled from imagery; they are not administrative boundaries, and they contain false positives and omissions.
 - **D-05 DEM:** it is a surface model (includes trees and buildings), not bare earth; vertical error is significant in flat floodplains. It is not suitable for flood-depth estimation.
 - **D-06 WorldCover:** 2020 (v100) and 2021 (v200) use different algorithms, so differencing them is **not** valid change detection (relevant to Use case D).
+- **D-09/D-10 population:** modelled estimates of where people usually live, not counts; the two models disagree, so exposure is shown as a range. Exposure assumes people are spread evenly within each 100 m cell. GHS-POP for 2023 is interpolated between a 2020 estimate and a 2025 projection.
+- **D-11 buildings:** machine-detected footprints with false positives and misses; results at two confidence thresholds bracket the count. A building in flood water is not a damaged building.
 - **D-08 flood extent:** shows water observed on specific satellite pass dates only. It is not a hazard model, not a return-period map, and not peak extent. SAR misses flooding under dense vegetation and in built-up areas. It needs validation against reported affected communities.
 - **D-01 boundaries:** check whether any district changes since the boundaries' validity date affect the pilot. Names differ from common usage (e.g. "Lower Manya" for Lower Manya Krobo) — always join on P-code, never on name.
 - **D-02 health and power coverage:** very few features are mapped inside the pilot. Absence on the map must not be read as absence on the ground.

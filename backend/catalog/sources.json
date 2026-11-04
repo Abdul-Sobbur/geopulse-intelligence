@@ -78,5 +78,35 @@
     "licence_confirmed": false,
     "attribution": "Contains modified Copernicus Sentinel data (2023), processed by GeoPulse",
     "acquired": "2026-11-02"
+  },
+  {
+    "id": "D-09",
+    "title": "WorldPop Global2 population, R2025A v1 (Ghana, 2023), 100 m",
+    "provider": "WorldPop, University of Southampton, via Google Earth Engine (WorldPop/GP/100m/R2025A/v1/pop)",
+    "url": "https://developers.google.com/earth-engine/datasets/catalog/WorldPop_GP_100m_R2025A_v1_pop",
+    "licence": "CC BY 4.0",
+    "licence_confirmed": true,
+    "attribution": "Bondarenko, M., Priyatikanto, R., Tejedor-Garavito, N., et al. (2025). Constrained estimates of 2015-2030 total number of people per grid square (R2025A, v1). WorldPop, University of Southampton. doi:10.5258/SOTON/WP00839",
+    "acquired": null
+  },
+  {
+    "id": "D-10",
+    "title": "GHS-POP R2023A population grid, epochs 2020 and 2025, 100 m",
+    "provider": "European Commission, Joint Research Centre, via Google Earth Engine (JRC/GHSL/P2023A/GHS_POP)",
+    "url": "https://developers.google.com/earth-engine/datasets/catalog/JRC_GHSL_P2023A_GHS_POP",
+    "licence": "Free reuse with acknowledgement of the source (European Commission reuse notice; record the exact terms)",
+    "licence_confirmed": false,
+    "attribution": "Schiavina, M., Freire, S., Carioli, A., MacManus, K. (2023). GHS-POP R2023A - GHS population grid multitemporal (1975-2030). European Commission, Joint Research Centre. doi:10.2905/2FF68A52-5B5B-4A22-8F40-C41DA8332CFE",
+    "acquired": null
+  },
+  {
+    "id": "D-11",
+    "title": "Google Open Buildings v3 building footprints",
+    "provider": "Google Research, via Google Earth Engine (GOOGLE/Research/open-buildings/v3/polygons)",
+    "url": "https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_Research_open-buildings_v3_polygons",
+    "licence": "CC BY 4.0",
+    "licence_confirmed": true,
+    "attribution": "Sirko, W., et al. (2021). Continental-scale building detection from high resolution satellite imagery. arXiv:2107.12283. Open Buildings v3, Google Research",
+    "acquired": null
   }
 ]
