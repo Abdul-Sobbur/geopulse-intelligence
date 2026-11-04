@@ -7,6 +7,7 @@ import csv
 import html
 import io
 import json
+import logging
 import math
 import os
 import zipfile
@@ -59,7 +60,10 @@ def health():
     try:
         with engine.connect() as conn:
             postgis = conn.execute(text("SELECT postgis_lib_version()")).scalar()
-    except SQLAlchemyError:
+    except SQLAlchemyError as err:
+        # The reason goes to the server log only (e.g. "password authentication failed"), never to callers
+        reason = str(getattr(err, "orig", None) or err).strip().splitlines()[0][:300]
+        logging.getLogger("uvicorn.error").warning("Health check: database unavailable: %s", reason)
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"status": "ok", "database": "connected", "postgis": postgis}
 
