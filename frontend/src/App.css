@@ -22,8 +22,8 @@
 
 .brand { display: flex; align-items: center; gap: 10px; flex: none; }
 .brand-mark {
-  width: 28px; height: 28px;
-  fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round;
+  width: 46px; height: 30px;
+  fill: none; stroke: var(--accent); stroke-width: 5.2; stroke-linecap: round; stroke-linejoin: round;
 }
 .brand-mark circle { fill: var(--accent); stroke: none; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.1; }

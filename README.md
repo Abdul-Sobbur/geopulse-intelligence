@@ -1,5 +1,6 @@
 # GeoPulse Intelligence
 
+<p align="center"><img src="docs/brand/geopulse-logo-on-light.svg" alt="GeoPulse" height="64"></p>
 [![CI](https://github.com/Abdul-Sobbur/geopulse-intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/Abdul-Sobbur/geopulse-intelligence/actions/workflows/ci.yml)
 
 **A geospatial decision-support platform for infrastructure, environmental and climate-risk screening.**

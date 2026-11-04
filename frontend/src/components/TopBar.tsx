@@ -28,10 +28,10 @@ export default function TopBar({
   return (
     <header className="topbar">
       <div className="brand">
-        <svg className="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M2 15c3 0 3-3 6-3s3 3 6 3 3-3 6-3 2 1 2 1" />
-          <path d="M2 20c3 0 3-3 6-3s3 3 6 3 3-3 6-3 2 1 2 1" opacity=".45" />
-          <circle cx="15" cy="6" r="2.4" />
+        {/* GeoPulse mark: a pulse that also reads as river flow, with a sensor dot (docs/brand) */}
+        <svg className="brand-mark" viewBox="-8 3 82 54" aria-hidden="true">
+          <path d="M-6 40H16.5C18.6 40 19.6 38.9 20.4 36.7L25.2 23.6C26.3 20.6 28.6 20.9 29.3 24.1L33.6 45.2C34.6 50 37.2 50.3 39.2 46.1C42.2 39.7 45.3 35.6 50.2 35.6C54.6 35.6 57 38.1 60 39.4C63.5 40.8 67 41.2 72 41.2" />
+          <circle cx="26.6" cy="10.4" r="5.4" />
         </svg>
         <div className="brand-text">
           <span className="brand-name">GeoPulse</span>
