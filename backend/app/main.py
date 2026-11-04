@@ -25,6 +25,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .catalog import Evidence, Role, Status, Theme, get_catalog
 from .db import engine
+from .screening import STATUSES, q, status_sql
 
 app = FastAPI(
     title="GeoPulse Intelligence API",
@@ -101,6 +102,99 @@ def catalog_layer(layer_id: str):
     record = layer.model_dump(mode="json")
     record["sources"] = [cat.sources[s].model_dump(mode="json") for s in layer.sources]
     return record
+
+
+# ---------------------------------------------------------------- generic screening
+
+@app.get("/screen", tags=["screening"])
+def screen(
+    hazard: str = Query(..., description="Hazard layer ID from the catalogue, e.g. flood-2023-observed"),
+    exposure: str = Query(..., description="Exposure layer ID from the catalogue, e.g. osm-assets"),
+    near_m: float = Query(250, ge=0, le=5000, description="Distance in metres that counts as 'near'"),
+    pcode: str | None = Query(None, max_length=20, description="Limit to one district"),
+    features: bool = Query(True, description="Include one row per feature, not only the summary"),
+):
+    """Screen any catalogue exposure layer against any catalogue hazard layer.
+
+    Statuses: in_primary (e.g. in observed flooding), in_secondary (e.g. in ambiguous water), near,
+    not_flagged, and context (reference features that are never flagged). Results come from
+    `scripts/run_screening.py`; the near distance is applied here, at query time.
+    """
+    cat = get_catalog()
+    hz, ex = cat.layers.get(hazard), cat.layers.get(exposure)
+    if hz is None or hz.screening != "hazard":
+        raise HTTPException(status_code=404, detail=f"'{hazard}' is not a screenable hazard layer")
+    if ex is None or ex.screening != "exposure":
+        raise HTTPException(status_code=404, detail=f"'{exposure}' is not a screenable exposure layer")
+
+    st = ex.storage
+    columns = [f"x.{q(st.id_column)}::text AS feature_id"]
+    columns.append(f"x.{q(st.type_column)}::text AS type" if st.type_column else "NULL AS type")
+    columns.append(f"x.{q(st.pcode_column)}::text AS pcode" if st.pcode_column else "NULL AS pcode")
+    where = "r.hazard_layer = :hz AND r.exposure_layer = :ex"
+    params = {"hz": hz.id, "ex": ex.id, "near": near_m}
+    if pcode:
+        if not st.pcode_column:
+            raise HTTPException(status_code=422, detail=f"'{exposure}' has no district column")
+        where += f" AND x.{q(st.pcode_column)} = :pcode"
+        params["pcode"] = pcode
+
+    sql = text(f"""
+        SELECT {", ".join(columns)},
+               {status_sql(ex)} AS status,
+               round(LEAST(r.dist_primary_m, r.dist_secondary_m)::numeric, 1)::float8 AS distance_m,
+               round(r.overlap_primary::numeric, 1)::float8 AS overlap_primary,
+               r.overlap_unit
+        FROM screening_results r
+        JOIN {q(st.table)} x ON x.{q(st.id_column)}::text = r.feature_id
+        WHERE {where}
+        ORDER BY r.feature_id
+    """)
+    with engine.connect() as conn:
+        run = conn.execute(text("""
+            SELECT hazard_version, exposure_version, features, finished_at
+            FROM screening_runs WHERE hazard_layer = :hz AND exposure_layer = :ex
+            ORDER BY run_id DESC LIMIT 1
+        """), {"hz": hz.id, "ex": ex.id}).mappings().first() if _has_table(conn, "screening_runs") else None
+        if run is None:
+            raise HTTPException(status_code=404, detail=(
+                f"'{exposure}' has not been screened against '{hazard}' yet: "
+                "run scripts/run_screening.py"))
+        rows = [dict(r) for r in conn.execute(sql, params).mappings()]
+
+    by_type: dict[str, dict] = {}
+    totals = dict.fromkeys(STATUSES, 0)
+    for r in rows:
+        totals[r["status"]] += 1
+        t = by_type.setdefault(r["type"] or "all", {"type": r["type"] or "all", **dict.fromkeys(STATUSES, 0)})
+        t[r["status"]] += 1
+
+    def label(level: str) -> str:
+        names = [c.label for c in hz.classes if c.screening_level == level]
+        return " or ".join(names) if names else level
+
+    return {
+        "hazard": {"id": hz.id, "title": hz.title, "evidence": hz.evidence},
+        "exposure": {"id": ex.id, "title": ex.title, "evidence": ex.evidence},
+        "near_m": near_m,
+        "pcode": pcode,
+        "run": {**dict(run), "finished_at": run["finished_at"].isoformat() if run["finished_at"] else None},
+        "labels": {
+            "in_primary": f"In {label('primary').lower()}",
+            "in_secondary": f"In {label('secondary').lower()}",
+            "near": f"Within {near_m:g} m of either",
+            "not_flagged": "Not flagged (not confirmed safe)",
+            "context": "Reference feature, not screened",
+        },
+        "totals": totals,
+        "by_type": sorted(by_type.values(), key=lambda t: -(t["in_primary"] + t["in_secondary"] + t["near"])),
+        "limitations": hz.limitations + ex.limitations,
+        "features": rows if features else None,
+    }
+
+
+def _has_table(conn, name: str) -> bool:
+    return conn.execute(text("SELECT to_regclass(:n) IS NOT NULL"), {"n": name}).scalar()
 
 
 # ---------------------------------------------------------------- assets

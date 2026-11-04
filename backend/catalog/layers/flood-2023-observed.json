@@ -8,14 +8,22 @@
   "geometry": "polygon",
   "status": "live",
   "version": "1.0",
-  "coverage": { "scope": "pilot", "pilot_id": "lower_volta", "country": "GH" },
+  "coverage": {
+    "scope": "pilot",
+    "pilot_id": "lower_volta",
+    "country": "GH"
+  },
   "temporal": {
     "kind": "event",
     "start": "2023-10-16",
     "end": "2023-10-23",
     "note": "Union of two radar passes: track 147 on 16 October and track 74 on 23 October 2023"
   },
-  "sources": ["D-07", "D-08", "D-05"],
+  "sources": [
+    "D-07",
+    "D-08",
+    "D-05"
+  ],
   "method": "Sentinel-1 VV change detection adapted from UN-SPIDER: flood-date backscatter against a 5-scene pre-event median per track (ratio above 1.25 and below -15 dB), slope of 5 degrees or less from the DEM, at least 8 connected pixels. Permanent water removed with JRC Global Surface Water; new water where water occurs at least 10% of the time is classed as ambiguous.",
   "limitations": [
     "Shows water on two pass dates only: not peak extent, not a hazard model and not a return-period map.",
@@ -23,11 +31,30 @@
     "Ambiguous water includes lagoons and salt pans near Ada that flood every year; report the extent as a range of about 38 to 78 square kilometres.",
     "Not yet validated against reported affected communities."
   ],
-  "storage": { "kind": "postgis", "table": "hazard_features", "where": "hazard_id = 'flood_2023_observed'" },
+  "storage": {
+    "kind": "postgis",
+    "table": "hazard_features",
+    "id_column": "feature_id",
+    "class_column": "class_name",
+    "filter": {
+      "column": "hazard_id",
+      "value": "flood_2023_observed"
+    }
+  },
   "classes": [
-    { "value": "flooded", "label": "Observed flooding", "colour": "#22D3EE" },
-    { "value": "ambiguous", "label": "Ambiguous seasonal water", "colour": "#EC835A",
-      "description": "New water where water has occurred before, so it cannot be put down to the spillage" }
+    {
+      "value": "flooded",
+      "label": "Observed flooding",
+      "colour": "#22D3EE",
+      "screening_level": "primary"
+    },
+    {
+      "value": "ambiguous",
+      "label": "Ambiguous seasonal water",
+      "colour": "#EC835A",
+      "description": "New water where water has occurred before, so it cannot be put down to the spillage",
+      "screening_level": "secondary"
+    }
   ],
   "screening": "hazard"
 }

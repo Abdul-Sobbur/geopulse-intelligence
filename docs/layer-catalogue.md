@@ -21,8 +21,8 @@ CI fails if any file breaks them. The API serves the catalogue at `/catalog` and
 | `sources` | Which datasets it comes from | IDs from `sources.json`, at least one |
 | `method` | How it was made | text |
 | `limitations` | What it cannot tell you | at least one; never empty |
-| `storage` | Where the data is | postgis (`table`, optional `where`), raster or pmtiles (`path`) |
-| `style`, `classes` | How it is drawn and what each value means | hex colours |
+| `storage` | Where the data is and which columns matter | postgis (`table`, `id_column`, `pcode_column`, `type_column`, `class_column` or `class_lookup`, optional `filter`), raster or pmtiles (`path`) |
+| `style`, `classes` | How it is drawn and what each value means; hazard classes carry `screening_level` (primary or secondary), exposure classes can be `screened: false` | hex colours |
 | `screening` | Whether the screening engine may use it | hazard or exposure (must match `role`) |
 
 Sources record the licence, whether it has been confirmed (`licence_confirmed`), and the exact
@@ -34,3 +34,27 @@ attribution line the provider asks for.
 2. Copy an existing layer file, rename it to the new `id`, and fill in every field.
 3. Check it from the `backend` folder: `python -m app.catalog`.
 4. Run `pytest`; commit when it passes.
+
+## Screening any hazard against any exposure
+
+A hazard layer with `"screening": "hazard"` and an exposure layer with `"screening": "exposure"` can be
+screened against each other with no new code:
+
+```
+python scripts/run_screening.py                                    # every live pair
+python scripts/run_screening.py --hazard flood-2023-observed --exposure osm-assets
+python scripts/check_screening.py                                  # compare with the original flood screening
+```
+
+For each exposure feature the `screening_results` table stores the distance to the nearest primary
+and secondary hazard feature and the length or area inside each; `screening_runs` records when and
+with which layer versions. The API's `/screen?hazard=…&exposure=…&near_m=…` turns those into
+statuses at query time:
+
+| Status | Rule |
+| --- | --- |
+| `in_primary` | Polygons: some area inside a primary class. Points and lines: touching one |
+| `in_secondary` | The same for a secondary class, when not `in_primary` |
+| `near` | Within `near_m` of either |
+| `not_flagged` | Everything else; this does not mean safe |
+| `context` | Features of a class marked `screened: false` (e.g. rivers and water bodies) |

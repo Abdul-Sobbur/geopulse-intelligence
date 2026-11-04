@@ -8,14 +8,30 @@
   "geometry": "polygon",
   "status": "live",
   "version": "1.0",
-  "coverage": { "scope": "national", "country": "GH" },
-  "temporal": { "kind": "static", "note": "Validity date as given in the COD-AB release" },
-  "sources": ["D-01"],
+  "coverage": {
+    "scope": "national",
+    "country": "GH"
+  },
+  "temporal": {
+    "kind": "static",
+    "note": "Validity date as given in the COD-AB release"
+  },
+  "sources": [
+    "D-01"
+  ],
   "method": "Admin level 2 polygons loaded unchanged into PostGIS (EPSG:4326); 260 districts, 0 invalid geometries. Areas are computed geodesically.",
   "limitations": [
     "District changes after the boundaries' validity date are not reflected.",
     "Names can differ from common usage (for example Lower Manya for Lower Manya Krobo): always join on P-code, never on name."
   ],
-  "storage": { "kind": "postgis", "table": "admin_boundaries" },
-  "style": { "colour": "#6E8496", "dashed": true }
+  "storage": {
+    "kind": "postgis",
+    "table": "admin_boundaries",
+    "id_column": "pcode",
+    "pcode_column": "pcode"
+  },
+  "style": {
+    "colour": "#6E8496",
+    "dashed": true
+  }
 }

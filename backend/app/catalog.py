@@ -75,6 +75,9 @@ class LayerClass(Strict):
     label: str
     colour: str
     description: str | None = None
+    screening_level: Literal["primary", "secondary"] | None = Field(
+        default=None, description="Hazard classes only: primary = attributable, secondary = uncertain")
+    screened: bool = Field(default=True, description="Exposure classes only: false = reference, never flagged")
 
     @field_validator("colour")
     @classmethod
@@ -84,10 +87,31 @@ class LayerClass(Strict):
         return v
 
 
+IDENT = r"^[a-z_][a-z0-9_]*$"   # a plain SQL identifier: safe to quote into a query
+
+
+class Filter(Strict):
+    column: str = Field(pattern=IDENT)
+    value: str | int
+
+
+class Lookup(Strict):
+    """Class values held in another table, e.g. asset category in asset_types, keyed by asset_type."""
+    table: str = Field(pattern=IDENT)
+    key_column: str = Field(pattern=IDENT, description="Column present in both tables")
+    value_column: str = Field(pattern=IDENT)
+
+
 class Storage(Strict):
     kind: Literal["postgis", "raster", "pmtiles"]
-    table: str | None = None
-    where: str | None = Field(default=None, description="Fixed filter, e.g. hazard_id = 'flood_2023_observed'")
+    table: str | None = Field(default=None, pattern=IDENT)
+    id_column: str | None = Field(default=None, pattern=IDENT, description="Unique feature ID")
+    geom_column: str = Field(default="geom", pattern=IDENT)
+    pcode_column: str | None = Field(default=None, pattern=IDENT, description="District P-code, for grouping")
+    class_column: str | None = Field(default=None, pattern=IDENT, description="Column holding the class values")
+    type_column: str | None = Field(default=None, pattern=IDENT, description="Finer type, for summaries")
+    class_lookup: Lookup | None = Field(default=None, description="Where the class lives, if not in this table")
+    filter: Filter | None = Field(default=None, description="Rows that belong to this layer, if the table is shared")
     path: str | None = None
 
     @model_validator(mode="after")
@@ -96,6 +120,8 @@ class Storage(Strict):
             raise ValueError("postgis storage needs a table")
         if self.kind in ("raster", "pmtiles") and not self.path:
             raise ValueError(f"{self.kind} storage needs a path")
+        if self.class_column and self.class_lookup:
+            raise ValueError("use class_column or class_lookup, not both")
         return self
 
 
@@ -134,12 +160,29 @@ class Layer(Strict):
         default=None, description="Whether the screening engine may use it, and on which side")
 
     @model_validator(mode="after")
-    def screening_matches_role(self):
-        if self.screening == "hazard" and self.role != "hazard":
-            raise ValueError("only a hazard layer can be screened as a hazard")
-        if self.screening == "exposure" and self.role != "exposure":
-            raise ValueError("only an exposure layer can be screened as exposure")
+    def screening_is_possible(self):
+        if self.screening and self.storage.kind != "postgis":
+            raise ValueError("a screened layer must be stored in PostGIS")
+        if self.screening == "hazard":
+            if self.role != "hazard":
+                raise ValueError("only a hazard layer can be screened as a hazard")
+            if not self.storage.class_column:
+                raise ValueError("a screened hazard needs storage.class_column")
+            if not any(c.screening_level == "primary" for c in self.classes):
+                raise ValueError("a screened hazard needs at least one class with screening_level 'primary'")
+        if self.screening == "exposure":
+            if self.role != "exposure":
+                raise ValueError("only an exposure layer can be screened as exposure")
+            if not self.storage.id_column:
+                raise ValueError("a screened exposure layer needs storage.id_column")
+            if any(not c.screened for c in self.classes) and not (
+                    self.storage.class_column or self.storage.class_lookup):
+                raise ValueError("unscreened classes need storage.class_column or storage.class_lookup")
         return self
+
+    def class_values(self, level: str) -> list:
+        """Hazard class values at one screening level (primary or secondary)."""
+        return [c.value for c in self.classes if c.screening_level == level]
 
 
 class Catalog(Strict):
