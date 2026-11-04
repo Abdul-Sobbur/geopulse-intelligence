@@ -11,9 +11,11 @@ import Segmented from "./components/Segmented";
 import TopBar from "./components/TopBar";
 import {
   API_URL, BASEMAPS, type BasemapId, CATEGORY_COLOURS, CLICKABLE_ASSET_LAYERS, FILTERED_LAYERS,
-  FLOOD_COLOURS, HAZARD_ID, LAYER_TYPES, PILOT_ID, SITE_LETTERS,
+  FLOOD_COLOURS, FLOOD_LAYER, HAZARD_ID, LAYER_TYPES, MAP_LAYER_GROUPS, PILOT_ID, SITE_LETTERS,
 } from "./config";
-import { comparisonQuery, dashboardQuery, errorMessage, fetchJson, loadBasemap, waitForApi } from "./lib/api";
+import {
+  comparisonQuery, dashboardQuery, errorMessage, fetchJson, loadBasemap, loadFloodScreening, waitForApi,
+} from "./lib/api";
 import { anchorPoint, circleRing, geometryBounds } from "./lib/geo";
 import {
   DIMMED, FLAGGED, STATUS, type SourceData, categoryColour, categoryColours, expr, filterExpr, layerFilter,
@@ -21,11 +23,12 @@ import {
 } from "./lib/mapStyle";
 import { assetPopupHtml, settlementPopupHtml } from "./lib/popups";
 import type {
-  AssetType, Bounds, CandidateSite, ComparisonResponse, DashboardResponse, District, DistrictProperties,
+  AssetType, Bounds, CandidateSite, CatalogResponse, ComparisonResponse, DashboardResponse, District, DistrictProperties,
   ExposureCounts, Feature, FeatureCollection, HazardLayer, PickTarget, ProximityFeature, ProximityResponse,
-  ScreeningAsset, ScreeningResponse, SettlementScreening, SettlementScreeningResponse, SummaryRow, Workspace,
+  ScreeningAsset, ScreeningResponse, SettlementScreening, SummaryRow, Workspace,
 } from "./types";
 import AssetsPanel from "./workspaces/AssetsPanel";
+import LayersPanel from "./workspaces/LayersPanel";
 import ComparePanel from "./workspaces/ComparePanel";
 import FloodPanel from "./workspaces/FloodPanel";
 import NearbyPanel from "./workspaces/NearbyPanel";
@@ -37,7 +40,6 @@ maplibregl.setWorkerUrl(workerUrl);
 const EMPTY: SourceData = { type: "FeatureCollection", features: [] };
 const PROXIMITY_LAYERS = ["proximity-fill", "proximity-line", "proximity-centre"];
 const SITE_LAYERS = ["sites-fill", "sites-line"];
-const FLOOD_LAYERS = ["hazard-fill", "hazard-line"];
 
 export default function App() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
@@ -71,7 +73,8 @@ export default function App() {
   const [hiddenCategories, setHiddenCategories] = useState<string[]>([]);
   const [selectedPcode, setSelectedPcode] = useState("");
   const [query, setQuery] = useState("");
-  const [showFlood, setShowFlood] = useState(true);
+  const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
+  const [hiddenLayers, setHiddenLayers] = useState<string[]>([]);
   const [highlightExposure, setHighlightExposure] = useState(true);
   const [nearM, setNearM] = useState(250);
   const [screeningResult, setScreeningResult] = useState<{
@@ -104,6 +107,7 @@ export default function App() {
   const dashboard = dashboardResult?.key === dashboardKey ? dashboardResult.data : null;
   const kpiValue = (id: string) => dashboard?.kpis.find((k) => k.id === id)?.value ?? null;
 
+  const showFlood = !hiddenLayers.includes(FLOOD_LAYER);
   const pickTarget: PickTarget = workspace === "compare" ? "site" : "proximity";
   const colours = categoryColours(basemap);
 
@@ -330,13 +334,14 @@ export default function App() {
         try {
           // The hosted API sleeps when idle; give it time to wake before loading data
           await waitForApi();
-          const [districtsFc, assetsFc, typeList, hazardList, floodFc, settlementsFc]: [
+          const [districtsFc, assetsFc, typeList, hazardList, floodFc, settlementsFc, catalogData]: [
             FeatureCollection<DistrictProperties>,
             FeatureCollection,
             AssetType[],
             HazardLayer[] | null,
             SourceData | null,
             FeatureCollection<{ adm2_pcode: string | null }> | null,
+            CatalogResponse | null,
           ] = await Promise.all([
             fetchJson<FeatureCollection<DistrictProperties>>(`${API_URL}/pilots/${PILOT_ID}/districts`),
             fetchJson<FeatureCollection>(`${API_URL}/assets?limit=5000`),
@@ -345,6 +350,8 @@ export default function App() {
             fetchJson<HazardLayer[]>(`${API_URL}/hazards`).catch(() => null),
             fetchJson<SourceData>(`${API_URL}/hazards/${HAZARD_ID}/features`).catch(() => null),
             fetchJson<FeatureCollection<{ adm2_pcode: string | null }>>(`${API_URL}/settlements`).catch(() => null),
+            // The layer catalogue: optional, so an older API still works
+            fetchJson<CatalogResponse>(`${API_URL}/catalog`).catch(() => null),
           ]);
 
           warningByTypeRef.current = new Map(typeList.map((t) => [t.asset_type, t.coverage_warning]));
@@ -533,6 +540,7 @@ export default function App() {
           });
 
           setAssetTypes(typeList);
+          setCatalog(catalogData);
           setAssetsData(assetsFc);
           setSettlementPcodes(settlementsFc ? settlementsFc.features.map((f) => f.properties.adm2_pcode) : null);
           setHazard((hazardList ?? []).find((h) => h.hazard_id === HAZARD_ID) ?? null);
@@ -606,7 +614,7 @@ export default function App() {
       map.setFilter(layerId, layerFilter(types, hiddenCategories, selectedPcode));
     }
     if (map.getLayer("settlement-fill")) {
-      const filter = settlementFilter(hiddenCategories, selectedPcode);
+      const filter = settlementFilter([], selectedPcode);
       map.setFilter("settlement-fill", filter);
       map.setFilter("settlement-outline", filter);
     }
@@ -632,11 +640,11 @@ export default function App() {
     };
     show(PROXIMITY_LAYERS, workspace === "nearby");
     show(SITE_LAYERS, workspace === "compare");
-    show(FLOOD_LAYERS, showFlood);
+    for (const [layer, mapLayers] of Object.entries(MAP_LAYER_GROUPS)) show(mapLayers, !hiddenLayers.includes(layer));
     for (const marker of siteMarkersRef.current.values()) {
       marker.getElement().style.display = workspace === "compare" ? "" : "none";
     }
-  }, [workspace, showFlood, mapReady, styleEpoch, sites]);
+  }, [workspace, hiddenLayers, mapReady, styleEpoch, sites]);
 
   // Load screening results and apply them as feature state (re-applied after a basemap change)
   useEffect(() => {
@@ -652,26 +660,21 @@ export default function App() {
     if (!screeningOn) return;
 
     const key = String(nearM);
-    Promise.all([
-      fetchJson<ScreeningResponse>(`${API_URL}/screening/${HAZARD_ID}?near_m=${nearM}`),
-      hasSettlements
-        ? fetchJson<SettlementScreeningResponse>(`${API_URL}/screening/${HAZARD_ID}/settlements?near_m=${nearM}`)
-          .catch(() => null)
-        : Promise.resolve(null),
-    ])
-      .then(([data, settlementData]) => {
+    loadFloodScreening(nearM)
+      .then(({ assets, settlements }) => {
         if (cancelled) return;
-        screeningRef.current = new Map(data.assets.map((a) => [a.asset_id, a]));
-        for (const a of data.assets) {
+        const data: ScreeningResponse = { hazard_id: HAZARD_ID, near_m: nearM, assets };
+        screeningRef.current = new Map(assets.map((a) => [a.asset_id, a]));
+        for (const a of assets) {
           map.setFeatureState({ source: "assets", id: a.asset_id }, { status: a.status });
         }
-        if (settlementData) {
-          settlementScreeningRef.current = new Map(settlementData.settlements.map((s) => [s.settlement_id, s]));
-          for (const s of settlementData.settlements) {
-            map.setFeatureState({ source: "settlements", id: s.settlement_id }, { status: s.status });
+        if (settlements && hasSettlements) {
+          settlementScreeningRef.current = new Map(settlements.map((st) => [st.settlement_id, st]));
+          for (const st of settlements) {
+            map.setFeatureState({ source: "settlements", id: st.settlement_id }, { status: st.status });
           }
         }
-        setScreeningResult({ key, data, settlements: settlementData ? settlementData.settlements : null });
+        setScreeningResult({ key, data, settlements: hasSettlements ? settlements : null });
       })
       .catch((err) => {
         if (!cancelled) setError(errorMessage(err));
@@ -793,7 +796,7 @@ export default function App() {
   function openFeature(feature: Feature) {
     const map = mapRef.current;
     if (!map) return;
-    if (workspace === "dashboard") changeWorkspace("assets");
+    if (workspace === "dashboard") changeWorkspace("layers");
     const b = geometryBounds(feature.geometry);
     if (b[0] === b[2] && b[1] === b[3]) map.flyTo({ center: [b[0], b[1]], zoom: 14 });
     else map.fitBounds(b, { padding: 60, maxZoom: 15 });
@@ -809,6 +812,14 @@ export default function App() {
       }
     }
     mapRef.current?.flyTo({ center: [f.lon, f.lat], zoom: 15 });
+  }
+
+  function toggleLayer(id: string) {
+    setHiddenLayers((current) => (current.includes(id) ? current.filter((l) => l !== id) : [...current, id]));
+  }
+
+  function setShowFlood(on: boolean) {
+    setHiddenLayers((current) => (on ? current.filter((l) => l !== FLOOD_LAYER) : [...current, FLOOD_LAYER]));
   }
 
   function toggleCategory(category: string) {
@@ -827,8 +838,16 @@ export default function App() {
   let panel = null;
   if (mapReady) {
     switch (workspace) {
-      case "assets":
-        panel = (
+      case "layers":
+        // The catalogue view needs the /catalog endpoint; an older API falls back to the asset list
+        panel = catalog ? (
+          <LayersPanel
+            catalog={catalog} hiddenLayers={hiddenLayers} onToggleLayer={toggleLayer}
+            assetTypes={assetTypes} counts={counts} colours={colours}
+            hiddenCategories={hiddenCategories} onToggleCategory={toggleCategory}
+            settlementFootprints={settlementCount} scopeLabel={scopeLabel}
+          />
+        ) : (
           <AssetsPanel
             assetTypes={assetTypes} counts={counts} colours={colours} hidden={hiddenCategories}
             onToggle={toggleCategory} scopeLabel={scopeLabel} settlementFootprints={settlementCount}

@@ -7,6 +7,10 @@ export const API_URL: string = import.meta.env.VITE_API_URL ?? "http://127.0.0.1
 export const PILOT_ID = "lower_volta";
 export const PILOT_NAME = "Lower Volta corridor";
 export const HAZARD_ID = "flood_2023_observed";
+// Catalogue IDs of the layers the app screens (see backend/catalog/layers)
+export const FLOOD_LAYER = "flood-2023-observed";
+export const ASSETS_LAYER = "osm-assets";
+export const SETTLEMENTS_LAYER = "grid3-settlements";
 
 // Free basemaps from OpenFreeMap (built on OpenStreetMap data), no API key needed
 export const BASEMAPS = {
@@ -26,7 +30,7 @@ export const FALLBACK_STYLE: StyleSpecification = {
 export const OVERLAY_SOURCES = ["districts", "assets", "hazard", "settlements", "proximity", "sites"];
 
 export const WORKSPACES: { id: Workspace; label: string }[] = [
-  { id: "assets", label: "Assets" },
+  { id: "layers", label: "Layers" },
   { id: "flood", label: "Flood screening" },
   { id: "nearby", label: "Nearby" },
   { id: "compare", label: "Compare sites" },
@@ -47,7 +51,7 @@ export const CATEGORY_COLOURS: Record<string, string> = {
 export const CATEGORY_LABELS: Record<string, string> = {
   transport: "Transport",
   water: "Water",
-  settlement: "Settlements",
+  settlement: "Named places",
   social: "Schools and health",
   energy: "Energy",
 };
@@ -96,3 +100,22 @@ export const FILTERED_LAYERS: Record<string, string[]> = {
 
 // Map layers that can be clicked for asset details
 export const CLICKABLE_ASSET_LAYERS = Object.keys(LAYER_TYPES);
+
+// Which map layers draw each catalogue layer (layers not listed are not drawn on the map)
+export const MAP_LAYER_GROUPS: Record<string, string[]> = {
+  "admin-districts": ["district-fill", "district-outline", "district-selected"],
+  "osm-assets": ["asset-areas", "asset-lines-halo", "asset-lines", "asset-power-lines", "asset-points"],
+  "grid3-settlements": ["settlement-fill", "settlement-outline"],
+  "flood-2023-observed": ["hazard-fill", "hazard-line"],
+};
+
+// Theme order in the Layers panel, with plain names
+export const THEMES: { id: string; label: string }[] = [
+  { id: "water", label: "Water" },
+  { id: "people", label: "People" },
+  { id: "infrastructure", label: "Infrastructure" },
+  { id: "land", label: "Land" },
+  { id: "climate", label: "Climate" },
+  { id: "terrain", label: "Terrain" },
+  { id: "boundaries", label: "Boundaries" },
+];

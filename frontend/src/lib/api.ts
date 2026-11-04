@@ -1,8 +1,14 @@
 // Talking to the GeoPulse API
 import type { StyleSpecification } from "maplibre-gl";
 
-import { API_URL, BASEMAPS, type BasemapId, FALLBACK_STYLE, HAZARD_ID, PILOT_ID } from "../config";
-import type { CandidateSite } from "../types";
+import {
+  API_URL, ASSETS_LAYER, BASEMAPS, type BasemapId, FALLBACK_STYLE, FLOOD_LAYER, HAZARD_ID, PILOT_ID,
+  SETTLEMENTS_LAYER,
+} from "../config";
+import type {
+  CandidateSite, ScreeningAsset, ScreeningResponse, ScreenResponse, ScreenStatus, SettlementScreening,
+  SettlementScreeningResponse,
+} from "../types";
 
 export async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -54,5 +60,56 @@ export async function waitForApi(attempts = 12, delayMs = 6000): Promise<void> {
       // Not awake yet (or a wake-up page without CORS headers): try again shortly
     }
     await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+}
+
+// The map's own status names (shared with the legend, popups and map styles)
+const MAP_STATUS: Record<ScreenStatus, string> = {
+  in_primary: "in_flood", in_secondary: "in_ambiguous", near: "near", not_flagged: "not_flagged", context: "context",
+};
+
+function screenUrl(exposure: string, nearM: number): string {
+  return `${API_URL}/screen?hazard=${FLOOD_LAYER}&exposure=${exposure}&near_m=${nearM}`;
+}
+
+// Flood screening of assets and settlements, from the generic /screen endpoint.
+// Falls back to the original endpoints if the API has not been updated or screened yet.
+export async function loadFloodScreening(nearM: number): Promise<{
+  assets: ScreeningAsset[];
+  settlements: SettlementScreening[] | null;
+}> {
+  try {
+    const [a, s] = await Promise.all([
+      fetchJson<ScreenResponse>(screenUrl(ASSETS_LAYER, nearM)),
+      fetchJson<ScreenResponse>(screenUrl(SETTLEMENTS_LAYER, nearM)).catch(() => null),
+    ]);
+    return {
+      assets: (a.features ?? []).map((r) => ({
+        asset_id: Number(r.feature_id),
+        asset_type: r.type ?? "",
+        category: "",
+        status: MAP_STATUS[r.status],
+        distance_m: r.distance_m,
+        flooded_length_m: r.overlap_unit === "m" ? r.overlap_primary : null,
+      })),
+      settlements: s?.features
+        ? s.features.map((r) => ({
+          settlement_id: Number(r.feature_id),
+          adm2_pcode: r.pcode,
+          settlement_type: r.type ?? "",
+          building_count: null,
+          status: MAP_STATUS[r.status],
+          distance_m: r.distance_m,
+          flooded_m2: r.overlap_unit === "m2" ? r.overlap_primary : null,
+        }))
+        : null,
+    };
+  } catch {
+    const [a, s] = await Promise.all([
+      fetchJson<ScreeningResponse>(`${API_URL}/screening/${HAZARD_ID}?near_m=${nearM}`),
+      fetchJson<SettlementScreeningResponse>(`${API_URL}/screening/${HAZARD_ID}/settlements?near_m=${nearM}`)
+        .catch(() => null),
+    ]);
+    return { assets: a.assets, settlements: s ? s.settlements : null };
   }
 }

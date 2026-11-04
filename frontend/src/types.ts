@@ -30,7 +30,7 @@ export type FeatureCollection<P = AssetProperties> = {
   bbox?: Bounds;
 };
 
-export type Workspace = "assets" | "flood" | "nearby" | "compare" | "dashboard" | "reports";
+export type Workspace = "layers" | "flood" | "nearby" | "compare" | "dashboard" | "reports";
 
 export type AssetType = {
   asset_type: string;
@@ -164,3 +164,61 @@ export type DashboardResponse = {
   definitions: MetricDefinition[];
   note: string;
 };
+
+// ---- Layer catalogue (GET /catalog) ----
+
+export type CatalogClass = {
+  value: string | number;
+  label: string;
+  colour: string;
+  description: string | null;
+  screening_level: "primary" | "secondary" | null;
+  screened: boolean;
+};
+
+export type CatalogLayer = {
+  id: string;
+  title: string;
+  summary: string;
+  theme: string;
+  role: string;
+  evidence: "Observation" | "Modelled estimate" | "Derived";
+  geometry: string;
+  status: string;
+  version: string;
+  coverage: { scope: string; pilot_id: string | null; country: string };
+  temporal: { kind: string; start: string | null; end: string | null; note: string | null };
+  sources: string[];
+  method: string;
+  limitations: string[];
+  classes: CatalogClass[];
+  screening: "hazard" | "exposure" | null;
+};
+
+export type CatalogSource = {
+  id: string;
+  title: string;
+  provider: string;
+  url: string | null;
+  licence: string;
+  licence_confirmed: boolean;
+  attribution: string;
+};
+
+export type CatalogResponse = { layers: CatalogLayer[]; sources: CatalogSource[] };
+
+// ---- Generic screening (GET /screen) ----
+
+export type ScreenStatus = "in_primary" | "in_secondary" | "near" | "not_flagged" | "context";
+
+export type ScreenRow = {
+  feature_id: string;
+  type: string | null;
+  pcode: string | null;
+  status: ScreenStatus;
+  distance_m: number | null;
+  overlap_primary: number | null;
+  overlap_unit: "m" | "m2" | null;
+};
+
+export type ScreenResponse = { features: ScreenRow[] | null };

@@ -783,3 +783,44 @@
   .chart-grid { grid-template-columns: 1fr; }
   .definitions { grid-template-columns: 1fr; }
 }
+
+/* ---------- Layers (catalogue) ---------- */
+
+.theme { display: flex; flex-direction: column; gap: 10px; }
+.theme-name {
+  font-size: 13px; font-weight: 500; color: var(--text-3);
+  padding-top: 14px; border-top: 1px solid var(--line);
+}
+.layer {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+.layer.is-off .layer-summary, .layer.is-off .class-list, .layer.is-off .layer-count { opacity: 0.5; }
+.layer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.layer-head h4 { font-size: 15px; font-weight: 600; margin: 0 0 5px; }
+.layer-head .kind { margin-right: 8px; }
+.layer-when { font-size: 12px; color: var(--text-3); }
+.layer-note { font-size: 12px; color: var(--text-3); white-space: nowrap; padding-top: 2px; }
+.layer-summary { font-size: 13px; color: var(--text-2); margin: 0; }
+.layer-count { font-size: 13px; color: var(--text-2); margin: 0; }
+
+.class-list { display: flex; flex-direction: column; margin: 0 -6px; }
+.class-toggle {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 4px 6px; border: 0; border-radius: var(--radius-s);
+  background: none; font-size: 13px; text-align: left; color: var(--text);
+}
+.class-toggle:hover { background: var(--hover); }
+.class-toggle.is-off { color: var(--text-3); }
+.class-toggle.is-off .key { opacity: 0.3; }
+.class-count { margin-left: auto; font-weight: 500; }
+
+.about { font-size: 13px; color: var(--text-2); }
+.about summary { cursor: pointer; color: var(--accent); font-size: 13px; width: max-content; }
+.about h5 { margin: 12px 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
+.about p { margin: 0; }
+.source-list, .limit-list { margin: 0; padding-left: 18px; list-style: disc; display: flex; flex-direction: column; gap: 4px; }
+.unconfirmed { color: var(--status-near); }
