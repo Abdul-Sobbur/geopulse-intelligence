@@ -1,0 +1,82 @@
+[
+  {
+    "id": "D-01",
+    "title": "Ghana Subnational Administrative Boundaries (COD-AB), admin levels 0-2",
+    "provider": "Ghana Statistical Service, published by OCHA on HDX",
+    "url": "https://data.humdata.org/dataset/cod-ab-gha",
+    "licence": "CC BY-IGO 3.0 (re-confirm on the HDX page; the dataset was recently republished)",
+    "licence_confirmed": false,
+    "attribution": "Ghana Statistical Service, via OCHA HDX (CC BY-IGO)",
+    "acquired": "2026-11-01"
+  },
+  {
+    "id": "D-02",
+    "title": "OpenStreetMap Ghana extract (roads, waterways, water bodies, places, facilities)",
+    "provider": "OpenStreetMap contributors, via Geofabrik",
+    "url": "https://download.geofabrik.de/africa/ghana.html",
+    "licence": "ODbL 1.0",
+    "licence_confirmed": true,
+    "attribution": "© OpenStreetMap contributors (ODbL)",
+    "acquired": "2026-11-01"
+  },
+  {
+    "id": "D-03",
+    "title": "OpenStreetMap power infrastructure (plants, substations, high-voltage lines)",
+    "provider": "OpenStreetMap contributors, via Geofabrik",
+    "url": "https://download.geofabrik.de/africa/ghana.html",
+    "licence": "ODbL 1.0",
+    "licence_confirmed": true,
+    "attribution": "© OpenStreetMap contributors (ODbL)",
+    "acquired": "2026-11-01"
+  },
+  {
+    "id": "D-04",
+    "title": "GRID3 GHA Settlement Extents v3.0",
+    "provider": "GRID3 / CIESIN, Columbia University, via HDX",
+    "url": null,
+    "licence": "To confirm from the release notes; treated as CC BY-SA 4.0 (attribution and share-alike) until then",
+    "licence_confirmed": false,
+    "attribution": "Center for International Earth Science Information Network (CIESIN), Columbia University. 2024. GRID3 GHA - Settlement Extents v3.0. New York: GRID3.",
+    "acquired": "2026-11-02"
+  },
+  {
+    "id": "D-05",
+    "title": "Copernicus DEM GLO-30 (release 2024_1)",
+    "provider": "ESA / Copernicus, via Google Earth Engine (COPERNICUS/DEM/GLO30_2024_1)",
+    "url": null,
+    "licence": "Copernicus WorldDEM-30 free licence; attribution notice required (verify exact wording)",
+    "licence_confirmed": false,
+    "attribution": "Produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
+    "acquired": null
+  },
+  {
+    "id": "D-06",
+    "title": "ESA WorldCover 10 m 2021 (v200)",
+    "provider": "ESA WorldCover consortium, via Google Earth Engine (ESA/WorldCover/v200)",
+    "url": "https://developers.google.com/earth-engine/datasets/catalog/ESA_WorldCover_v200",
+    "licence": "CC BY 4.0",
+    "licence_confirmed": true,
+    "attribution": "© ESA WorldCover project / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium",
+    "acquired": null
+  },
+  {
+    "id": "D-07",
+    "title": "Sentinel-1 GRD (SAR), IW mode, VV polarisation",
+    "provider": "ESA / Copernicus, via Google Earth Engine (COPERNICUS/S1_GRD)",
+    "url": "https://developers.google.com/earth-engine/datasets/catalog/COPERNICUS_S1_GRD",
+    "licence": "Copernicus Sentinel data, free and open (record the exact terms)",
+    "licence_confirmed": false,
+    "attribution": "Contains modified Copernicus Sentinel data (2023)",
+    "acquired": null
+  },
+  {
+    "id": "D-08",
+    "title": "2023 Lower Volta observed flood extent (derived)",
+    "provider": "GeoPulse, own processing of D-07 (scripts/s1_flood_extent.py)",
+    "url": "https://github.com/Abdul-Sobbur/geopulse-intelligence",
+    "licence": "Derived from Copernicus Sentinel-1 data; licence for GeoPulse outputs not yet chosen",
+    "licence_confirmed": false,
+    "attribution": "Contains modified Copernicus Sentinel data (2023), processed by GeoPulse",
+    "acquired": "2026-11-02"
+  }
+]

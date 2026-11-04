@@ -16,6 +16,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+# The layer catalogue: one JSON file per map layer, plus the source registry
+COPY catalog ./catalog
 # Terrain and land-cover rasters for site comparison (small, clipped to the pilot area)
 COPY site_rasters ./site_rasters
 

@@ -1,0 +1,20 @@
+{
+  "id": "worldcover-2021",
+  "title": "Land cover, 2021",
+  "summary": "What covers the ground (trees, cropland, built-up areas, water and more), used to describe candidate sites.",
+  "theme": "land",
+  "role": "context",
+  "evidence": "Modelled estimate",
+  "geometry": "raster",
+  "status": "live",
+  "version": "1.0",
+  "coverage": { "scope": "pilot", "pilot_id": "lower_volta", "country": "GH" },
+  "temporal": { "kind": "period", "start": "2021-01-01", "end": "2021-12-31" },
+  "sources": ["D-06"],
+  "method": "Clipped from Earth Engine to the pilot bounding box plus 0.05 degrees and resampled by nearest neighbour to about 20 m.",
+  "limitations": [
+    "A classification model with known errors between similar classes.",
+    "The 2020 and 2021 editions use different algorithms, so comparing them is not valid change detection."
+  ],
+  "storage": { "kind": "raster", "path": "site_rasters/worldcover2021_pilot.tif" }
+}

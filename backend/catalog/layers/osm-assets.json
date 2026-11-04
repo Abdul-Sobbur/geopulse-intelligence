@@ -1,0 +1,29 @@
+{
+  "id": "osm-assets",
+  "title": "Mapped assets",
+  "summary": "Roads, bridges, places, schools, health facilities, power infrastructure and water features mapped in OpenStreetMap.",
+  "theme": "infrastructure",
+  "role": "exposure",
+  "evidence": "Observation",
+  "geometry": "mixed",
+  "status": "live",
+  "version": "1.0",
+  "coverage": { "scope": "pilot", "pilot_id": "lower_volta", "country": "GH" },
+  "temporal": { "kind": "snapshot", "start": "2026-10-31", "note": "Geofabrik extract of 31 October 2026" },
+  "sources": ["D-02", "D-03"],
+  "method": "Features selected by OSM tags from the Ghana extract, closed power ways converted to areas, and each asset assigned to a district by P-code. 1,296 assets in the pilot.",
+  "limitations": [
+    "Completeness varies by place and type: a missing feature is not proof that it is absent on the ground.",
+    "Health facilities and power infrastructure are sparsely mapped in the pilot.",
+    "Only already-public OSM features are shown; no attempt is made to locate unmapped critical infrastructure."
+  ],
+  "storage": { "kind": "postgis", "table": "assets" },
+  "classes": [
+    { "value": "transport", "label": "Transport", "colour": "#B8C4CE" },
+    { "value": "settlement", "label": "Named places", "colour": "#D55181" },
+    { "value": "social", "label": "Schools and health", "colour": "#008300" },
+    { "value": "energy", "label": "Energy", "colour": "#9085E9", "description": "Power lines are also dashed" },
+    { "value": "water", "label": "Water", "colour": "#3987E5", "description": "Reference only; not screened" }
+  ],
+  "screening": "exposure"
+}

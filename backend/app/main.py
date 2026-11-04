@@ -23,11 +23,12 @@ from rasterio.windows import Window
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from .catalog import Evidence, Role, Status, Theme, get_catalog
 from .db import engine
 
 app = FastAPI(
     title="GeoPulse Intelligence API",
-    version="1.0.0",
+    version="1.1.0",
     description=(
         "Spatial decision-support API. Pilot area: Lower Volta corridor, Ghana. "
         "All outputs are preliminary screening information, not engineering "
@@ -60,6 +61,46 @@ def health():
     except SQLAlchemyError:
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"status": "ok", "database": "connected", "postgis": postgis}
+
+
+# ---------------------------------------------------------------- catalogue
+
+@app.get("/catalog", tags=["catalogue"])
+def catalog(
+    theme: Theme | None = None,
+    role: Role | None = None,
+    evidence: Evidence | None = None,
+    status: Status | None = None,
+):
+    """Every layer the platform knows about, with its sources, evidence label and limitations.
+
+    Filter by theme, role, evidence or status. The catalogue files live in `backend/catalog/`.
+    """
+    cat = get_catalog()
+    layers = [
+        layer for layer in cat.layers.values()
+        if (theme is None or layer.theme == theme)
+        and (role is None or layer.role == role)
+        and (evidence is None or layer.evidence == evidence)
+        and (status is None or layer.status == status)
+    ]
+    cited = {s for layer in layers for s in layer.sources}
+    return {
+        "layers": [layer.model_dump(mode="json") for layer in layers],
+        "sources": [cat.sources[s].model_dump(mode="json") for s in sorted(cited)],
+    }
+
+
+@app.get("/catalog/layers/{layer_id}", tags=["catalogue"])
+def catalog_layer(layer_id: str):
+    """One layer's full record, with its sources written out."""
+    cat = get_catalog()
+    layer = cat.layers.get(layer_id)
+    if layer is None:
+        raise HTTPException(status_code=404, detail=f"No layer '{layer_id}' in the catalogue")
+    record = layer.model_dump(mode="json")
+    record["sources"] = [cat.sources[s].model_dump(mode="json") for s in layer.sources]
+    return record
 
 
 # ---------------------------------------------------------------- assets

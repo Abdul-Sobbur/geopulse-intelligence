@@ -1,0 +1,22 @@
+{
+  "id": "grid3-settlements",
+  "title": "Settlement footprints",
+  "summary": "Outlines of built-up areas, small settlements and hamlets, with an estimated building count for each.",
+  "theme": "people",
+  "role": "exposure",
+  "evidence": "Modelled estimate",
+  "geometry": "polygon",
+  "status": "live",
+  "version": "1.0",
+  "coverage": { "scope": "pilot", "pilot_id": "lower_volta", "country": "GH" },
+  "temporal": { "kind": "snapshot", "start": "2024-01-01", "note": "GRID3 data year 2024; no exact date given" },
+  "sources": ["D-04"],
+  "method": "GRID3 v3.0 polygons kept where their representative interior point falls inside the pilot districts: 4,705 settlements.",
+  "limitations": [
+    "Extents are modelled from imagery and contain false positives and omissions; they are not administrative boundaries.",
+    "Building counts cover the whole settlement, so they must never be reported as buildings flooded."
+  ],
+  "storage": { "kind": "postgis", "table": "settlements" },
+  "style": { "colour": "#D55181", "opacity": 0.22 },
+  "screening": "exposure"
+}

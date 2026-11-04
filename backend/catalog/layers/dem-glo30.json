@@ -1,0 +1,20 @@
+{
+  "id": "dem-glo30",
+  "title": "Elevation",
+  "summary": "Height of the land surface at about 30 m resolution, used for slope and elevation at candidate sites.",
+  "theme": "terrain",
+  "role": "context",
+  "evidence": "Observation",
+  "geometry": "raster",
+  "status": "live",
+  "version": "1.0",
+  "coverage": { "scope": "pilot", "pilot_id": "lower_volta", "country": "GH" },
+  "temporal": { "kind": "period", "start": "2011-01-01", "end": "2015-12-31", "note": "Acquired 2011 to 2015" },
+  "sources": ["D-05"],
+  "method": "Clipped from Earth Engine to the pilot bounding box plus 0.05 degrees and stored as a 16-bit GeoTIFF (no-data -9999).",
+  "limitations": [
+    "A surface model that includes trees and buildings, not bare earth.",
+    "Vertical error is large in flat floodplains, so it is not suitable for flood-depth estimates."
+  ],
+  "storage": { "kind": "raster", "path": "site_rasters/dem_glo30_pilot.tif" }
+}
