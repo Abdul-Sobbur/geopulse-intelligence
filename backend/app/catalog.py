@@ -185,6 +185,29 @@ class Layer(Strict):
         return [c.value for c in self.classes if c.screening_level == level]
 
 
+class ReportedFigure(Strict):
+    """An impact figure reported by an outside body, shown next to GeoPulse estimates for comparison."""
+    id: str = Field(pattern=SLUG)
+    value: int = Field(ge=0)
+    measure: Literal["displaced", "affected"]
+    area: str
+    pcodes: list[str] = Field(default=[], description="Districts it covers; empty = whole event or none")
+    within_pilot: Literal["yes", "partly", "no"]
+    reported_by: str
+    published: date
+    source_title: str
+    url: HttpUrl
+    note: str | None = None
+
+
+def load_references(layer_id: str, directory: Path = CATALOG_DIR) -> list[ReportedFigure]:
+    """Reported impact figures for a hazard layer (catalog/references/<layer id>.json), if any."""
+    path = directory / "references" / f"{layer_id}.json"
+    if not path.exists():
+        return []
+    return [ReportedFigure(**r) for r in json.loads(path.read_text(encoding="utf-8"))]
+
+
 class Catalog(Strict):
     sources: dict[str, Source]
     layers: dict[str, Layer]

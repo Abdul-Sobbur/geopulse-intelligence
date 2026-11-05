@@ -1,8 +1,9 @@
 // Pilot dashboard: headline figures, district charts and tables, with metric definitions
 import { FLOOD_COLOURS, NEAR_OPTIONS, STATUS_COLOURS } from "../config";
 import { formatDistance, formatMetric } from "../lib/format";
-import type { DashboardDistrict, DashboardResponse } from "../types";
+import type { DashboardDistrict, DashboardResponse, PeopleResponse } from "../types";
 import BarList, { type BarRow } from "./BarList";
+import PeopleLadder from "./PeopleLadder";
 import Segmented from "./Segmented";
 
 type Props = {
@@ -12,13 +13,14 @@ type Props = {
   onSelectPcode: (pcode: string) => void;
   nearM: number;
   onNearM: (m: number) => void;
+  people: PeopleResponse | null;
 };
 
 // Headline figures in reading order; the first two describe the hazard, the rest exposure
 const HEADLINE = ["flooded_km2", "ambiguous_km2", "settlements_in_flood", "settlements_ambiguous_or_near", "assets_flagged"];
 const CONTEXT = ["area_km2", "assets", "settlements", "buildings"];
 
-export default function DashboardView({ data, loading, selectedPcode, onSelectPcode, nearM, onNearM }: Props) {
+export default function DashboardView({ data, loading, selectedPcode, onSelectPcode, nearM, onNearM, people }: Props) {
   const definitions = new Map((data?.definitions ?? []).map((d) => [d.id, d]));
   const kpi = new Map((data?.kpis ?? []).map((k) => [k.id, k.value]));
   const unitOf = (id: string) => definitions.get(id)?.unit ?? "";
@@ -85,6 +87,53 @@ export default function DashboardView({ data, loading, selectedPcode, onSelectPc
                 <div className="readout-row">{CONTEXT.map(readout)}</div>
               </div>
             </section>
+
+            {people && (
+              <section className="dash-section" aria-label="People near the observed water">
+                <h2>People near the observed water</h2>
+                <p className="dash-lead">
+                  {(people.ladder.find((s) => s.id === "within_100m")?.worldpop ?? 0).toLocaleString()} to{" "}
+                  {(people.ladder.find((s) => s.id === "within_250m")?.worldpop ?? 0).toLocaleString()} people
+                  lived within 100 m to 250 m of observed flooding in {people.scope.name}, out of an estimated{" "}
+                  {(people.population.worldpop_2023 ?? 0).toLocaleString()} residents.
+                </p>
+                <div className="people-grid">
+                  <PeopleLadder ladder={people.ladder} references={people.references} />
+                  <BarList
+                    title="People within 250 m of observed flooding, by district"
+                    rows={people.districts.map((d) => ({
+                      key: d.pcode, label: d.name, value: d.within_250m, selected: d.pcode === selectedPcode,
+                    }))}
+                    unit="count"
+                    colour={FLOOD_COLOURS.flooded}
+                    note="WorldPop 2023 residents in 100 m cells near water seen by radar."
+                  />
+                </div>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>District</th><th>Residents</th><th>In cells with observed flooding</th>
+                        <th>Within 100 m</th><th>Within 250 m</th><th>In settlements touching flooding</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {people.districts.map((d) => (
+                        <tr key={d.pcode} className={d.pcode === selectedPcode ? "is-selected" : ""}>
+                          <td>{d.name}</td>
+                          <td>{d.population.toLocaleString()}</td>
+                          <td>{d.in_cells.toLocaleString()}</td>
+                          <td>{d.within_100m.toLocaleString()}</td>
+                          <td>{d.within_250m.toLocaleString()}</td>
+                          <td>{d.settlements_touching.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <ul className="limit-list">{people.limitations.map((l) => <li key={l}>{l}</li>)}</ul>
+              </section>
+            )}
 
             <section className="chart-grid">
               <BarList

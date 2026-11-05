@@ -1,0 +1,41 @@
+[
+  {
+    "id": "un-displaced-total",
+    "value": 35857,
+    "measure": "displaced",
+    "area": "Whole spillage, all affected districts",
+    "pcodes": [],
+    "within_pilot": "partly",
+    "reported_by": "United Nations in Ghana, quoted by UNICEF Ghana",
+    "published": "2023-11-17",
+    "source_title": "UNICEF Ghana: The Akosombo Dam spillage",
+    "url": "https://www.unicef.org/ghana/blog/akosombo-dam-spillage",
+    "note": "Includes districts outside the pilot, such as Anloga."
+  },
+  {
+    "id": "nadmo-ada-east-affected",
+    "value": 5685,
+    "measure": "affected",
+    "area": "Ada East (28 communities, 1,135 households)",
+    "pcodes": ["GH0705"],
+    "within_pilot": "yes",
+    "reported_by": "NADMO Ada East, reported by the Ghana News Agency",
+    "published": "2024-07-22",
+    "source_title": "GNA: About 5,685 people were affected by Akosombo Dam spillage in Ada",
+    "url": "https://gna.org.gh/?p=379540",
+    "note": "Affected, not only displaced: 776 people moved to safe havens and 4,909 remained in flooded communities."
+  },
+  {
+    "id": "nadmo-anloga-displaced",
+    "value": 7202,
+    "measure": "displaced",
+    "area": "Anloga District (outside the pilot)",
+    "pcodes": [],
+    "within_pilot": "no",
+    "reported_by": "NADMO Anloga, reported by the Ghana News Agency",
+    "published": "2023-10-20",
+    "source_title": "GNA: Dam spillage: 7,202 residents displaced in Anloga District",
+    "url": "https://gna.org.gh/2023/10/dam-spillage-7202-residents-displaced-in-anloga-district-nadmo/",
+    "note": "Shows part of the gap between the whole-event figure and the pilot."
+  }
+]

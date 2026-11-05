@@ -14,7 +14,7 @@ import {
   FLOOD_COLOURS, FLOOD_LAYER, HAZARD_ID, LAYER_TYPES, MAP_LAYER_GROUPS, PILOT_ID, SITE_LETTERS,
 } from "./config";
 import {
-  comparisonQuery, dashboardQuery, errorMessage, fetchJson, loadBasemap, loadFloodScreening, waitForApi,
+  comparisonQuery, dashboardQuery, errorMessage, fetchJson, loadBasemap, loadFloodScreening, peopleQuery, waitForApi,
 } from "./lib/api";
 import { anchorPoint, circleRing, geometryBounds } from "./lib/geo";
 import {
@@ -23,7 +23,7 @@ import {
 } from "./lib/mapStyle";
 import { assetPopupHtml, settlementPopupHtml } from "./lib/popups";
 import type {
-  AssetType, Bounds, CandidateSite, CatalogResponse, ComparisonResponse, DashboardResponse, District, DistrictProperties,
+  AssetType, Bounds, CandidateSite, CatalogResponse, PeopleResponse, ComparisonResponse, DashboardResponse, District, DistrictProperties,
   ExposureCounts, Feature, FeatureCollection, HazardLayer, PickTarget, ProximityFeature, ProximityResponse,
   ScreeningAsset, ScreeningResponse, SettlementScreening, SummaryRow, Workspace,
 } from "./types";
@@ -89,6 +89,7 @@ export default function App() {
   const [sites, setSites] = useState<CandidateSite[]>([]);
   const [siteRadius, setSiteRadius] = useState(1000);
   const [comparisonResult, setComparisonResult] = useState<{ key: string; data: ComparisonResponse } | null>(null);
+  const [peopleResult, setPeopleResult] = useState<{ key: string; data: PeopleResponse | null } | null>(null);
   const [dashboardResult, setDashboardResult] = useState<{ key: string; data: DashboardResponse } | null>(null);
 
   // Derived during render: a result is shown only if it matches the current settings
@@ -105,6 +106,8 @@ export default function App() {
   const dashboardWanted = workspace === "dashboard" || workspace === "flood";
   const dashboardKey = dashboardQuery(nearM, selectedPcode);
   const dashboard = dashboardResult?.key === dashboardKey ? dashboardResult.data : null;
+  const peopleKey = peopleQuery(selectedPcode);
+  const people = peopleResult?.key === peopleKey ? peopleResult.data : null;
   const kpiValue = (id: string) => dashboard?.kpis.find((k) => k.id === id)?.value ?? null;
 
   const showFlood = !hiddenLayers.includes(FLOOD_LAYER);
@@ -717,6 +720,19 @@ export default function App() {
     };
   }, [sites, siteRadius, mapReady]);
 
+  // People near observed flooding (optional: an API without /people simply shows nothing)
+  useEffect(() => {
+    if (!dashboardWanted || !mapReady) return;
+    let cancelled = false;
+    const key = peopleQuery(selectedPcode);
+    fetchJson<PeopleResponse>(`${API_URL}/people?${key}`)
+      .then((data) => { if (!cancelled) setPeopleResult({ key, data }); })
+      .catch(() => { if (!cancelled) setPeopleResult({ key, data: null }); });
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboardWanted, selectedPcode, mapReady]);
+
   // Dashboard figures (also used for the flood readouts)
   useEffect(() => {
     if (!dashboardWanted || !mapReady) return;
@@ -868,6 +884,7 @@ export default function App() {
             settlementSummary={settlementSummary}
             labelFor={labelFor}
             scopeLabel={scopeLabel}
+            people={people}
           />
         );
         break;
@@ -970,6 +987,7 @@ export default function App() {
             onSelectPcode={setSelectedPcode}
             nearM={nearM}
             onNearM={setNearM}
+            people={people}
           />
         )}
       </div>

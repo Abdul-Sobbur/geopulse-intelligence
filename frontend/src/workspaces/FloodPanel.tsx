@@ -1,8 +1,9 @@
 // Flood screening workspace: the observed 2023 flood layer and what lies in or near it
+import PeopleLadder from "../components/PeopleLadder";
 import Segmented from "../components/Segmented";
 import { FLOOD_COLOURS, NEAR_OPTIONS, STATUS_COLOURS } from "../config";
 import { formatDistance } from "../lib/format";
-import type { ExposureCounts, HazardLayer, SummaryRow } from "../types";
+import type { ExposureCounts, HazardLayer, PeopleResponse, SummaryRow } from "../types";
 
 type Props = {
   hazard: HazardLayer | null;
@@ -19,11 +20,12 @@ type Props = {
   settlementSummary: ExposureCounts | null;
   labelFor: (assetType: string) => string;
   scopeLabel: string;
+  people: PeopleResponse | null;
 };
 
 export default function FloodPanel({
   hazard, floodedKm2, ambiguousKm2, showFlood, onShowFlood, highlight, onHighlight,
-  nearM, onNearM, loading, summary, settlementSummary, labelFor, scopeLabel,
+  nearM, onNearM, loading, summary, settlementSummary, labelFor, scopeLabel, people,
 }: Props) {
   if (!hazard) {
     return (
@@ -68,6 +70,27 @@ export default function FloodPanel({
           </p>
         )}
       </section>
+
+      {people && (() => {
+        const near100 = people.ladder.find((s) => s.id === "within_100m")?.worldpop;
+        const near250 = people.ladder.find((s) => s.id === "within_250m")?.worldpop;
+        return (
+          <section className="group people-block" aria-label="People near the observed water">
+            <h3 className="group-title">People near the observed water</h3>
+            {near100 != null && near250 != null && (
+              <p className="people-range">
+                <span className="people-figure">{near100.toLocaleString()}</span>
+                <span className="people-to">to</span>
+                <span className="people-figure">{near250.toLocaleString()}</span>
+              </p>
+            )}
+            <p className="hero-label">
+              people lived within 100 m to 250 m of observed flooding, estimated from WorldPop 2023.
+            </p>
+            <PeopleLadder ladder={people.ladder} references={people.references} compact />
+          </section>
+        );
+      })()}
 
       <section className="group">
         <div className="group-head">

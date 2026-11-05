@@ -222,3 +222,48 @@ export type ScreenRow = {
 };
 
 export type ScreenResponse = { features: ScreenRow[] | null };
+
+// ---- People near observed flooding (GET /people) ----
+
+export type PeopleStep = {
+  id: "in_cells" | "within_100m" | "within_250m" | "settlements_touching";
+  label: string;
+  worldpop: number | null;
+  ghspop: number | null;
+  buildings: number | null;
+  note: string;
+};
+
+export type ReportedFigure = {
+  id: string;
+  value: number;
+  measure: "displaced" | "affected";
+  area: string;
+  within_pilot: "yes" | "partly" | "no";
+  reported_by: string;
+  published: string;
+  source_title: string;
+  url: string;
+  note: string | null;
+};
+
+export type PeopleDistrict = {
+  pcode: string;
+  name: string;
+  population: number;
+  in_cells: number;
+  within_100m: number;
+  within_250m: number;
+  settlements_touching: number;
+};
+
+export type PeopleResponse = {
+  scope: { pcode: string | null; name: string };
+  computed_at: string;
+  population: { worldpop_2023: number | null; ghspop_2023: number | null };
+  buildings: { confidence_065: number | null; confidence_075: number | null };
+  ladder: PeopleStep[];
+  districts: PeopleDistrict[];
+  references: ReportedFigure[];
+  limitations: string[];
+};

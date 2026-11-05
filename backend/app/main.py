@@ -24,7 +24,7 @@ from rasterio.windows import Window
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from .catalog import Evidence, Role, Status, Theme, get_catalog
+from .catalog import Evidence, Role, Status, Theme, get_catalog, load_references
 from .db import engine
 from .screening import STATUSES, q, status_sql
 
@@ -111,6 +111,98 @@ def catalog_layer(layer_id: str):
     record = layer.model_dump(mode="json")
     record["sources"] = [cat.sources[s].model_dump(mode="json") for s in layer.sources]
     return record
+
+
+# ---------------------------------------------------------------- people (Wave 1)
+
+# Steps of the "ladder" from floor to ceiling: (id, label, WorldPop indicator, GHS-POP indicator, buildings)
+PEOPLE_LADDER = [
+    ("in_cells", "In 100 m cells where radar saw flooding",
+     "population_worldpop_2023_in_flood", "population_ghspop_2023_in_flood", "buildings_075_in_flood"),
+    ("within_100m", "Within 100 m of observed flooding",
+     "population_worldpop_2023_within_100m", "population_ghspop_2023_within_100m", "buildings_075_within_100m"),
+    ("within_250m", "Within 250 m of observed flooding",
+     "population_worldpop_2023_within_250m", "population_ghspop_2023_within_250m", "buildings_075_within_250m"),
+    ("settlements_touching", "Everyone in settlements the flooding touched",
+     "population_worldpop_2023_in_settlements_flood", None, "buildings_075_in_settlements_flood"),
+]
+PEOPLE_NOTES = {
+    "in_cells": "A floor: radar cannot see water among buildings, which is where people live.",
+    "within_100m": "People living at the edge of the observed water.",
+    "within_250m": "People living close to the observed water.",
+    "settlements_touching": "A ceiling: whole towns count if any part of them touched observed water.",
+}
+PEOPLE_LIMITATIONS = [
+    "Population figures are modelled estimates of where people usually live (WorldPop 2023, with GHS-POP as a "
+    "second model), not counts of people displaced or harmed.",
+    "Water was observed by radar on two dates; flooding among buildings and under vegetation is missed.",
+    "People are assumed to be spread evenly within each 100 m cell.",
+    "Reported figures measure different things (displaced or affected) over different areas, so they are a "
+    "check on scale, not a validation.",
+]
+
+
+@app.get("/people", tags=["people"])
+def people(
+    pilot_id: str = Query("lower_volta", max_length=40),
+    pcode: str | None = Query(None, max_length=20, description="Limit to one district"),
+):
+    """Population and buildings near observed 2023 flooding, as a ladder from floor to ceiling.
+
+    Figures come from scripts/people_exposure.py (district_indicators). Reported impact figures from
+    outside bodies are included for comparison, with their sources.
+    """
+    sql = text("""
+        SELECT i.pcode, b.name, i.indicator, i.value, i.computed_at
+        FROM district_indicators i
+        JOIN pilot_districts p ON p.pcode = i.pcode AND p.pilot_id = :pid
+        JOIN admin_boundaries b ON b.pcode = i.pcode
+        WHERE (CAST(:pcode AS text) IS NULL OR i.pcode = :pcode)
+    """)
+    with engine.connect() as conn:
+        if not _has_table(conn, "district_indicators"):
+            raise HTTPException(status_code=404, detail="No people estimates yet: run scripts/people_exposure.py")
+        rows = conn.execute(sql, {"pid": pilot_id, "pcode": pcode}).mappings().all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No people estimates for this pilot or district")
+
+    by_district: dict[str, dict] = {}
+    for r in rows:
+        d = by_district.setdefault(r["pcode"], {"pcode": r["pcode"], "name": r["name"], "values": {}})
+        d["values"][r["indicator"]] = r["value"]
+    total: dict[str, float] = {}
+    for d in by_district.values():
+        for k, v in d["values"].items():
+            total[k] = total.get(k, 0.0) + v
+
+    def val(key):
+        return round(total[key]) if key and key in total else None
+
+    references = [
+        ref.model_dump(mode="json") for ref in load_references("flood-2023-observed")
+        # Pilot view: whole-event figures only; district view: figures for that district only
+        if (pcode is None and not ref.pcodes and ref.within_pilot != "no") or (pcode is not None and pcode in ref.pcodes)
+    ]
+    return {
+        "scope": {"pcode": pcode, "name": by_district[pcode]["name"] if pcode else "Lower Volta corridor"},
+        "hazard": "flood-2023-observed",
+        "computed_at": max(r["computed_at"] for r in rows).isoformat(),
+        "population": {"worldpop_2023": val("population_worldpop_2023"),
+                       "ghspop_2023": val("population_ghspop_2023")},
+        "buildings": {"confidence_065": val("buildings_065"), "confidence_075": val("buildings_075")},
+        "ladder": [
+            {"id": sid, "label": label, "worldpop": val(wp), "ghspop": val(ghs), "buildings": val(bl),
+             "note": PEOPLE_NOTES[sid]}
+            for sid, label, wp, ghs, bl in PEOPLE_LADDER
+        ],
+        "districts": sorted((
+            {"pcode": d["pcode"], "name": d["name"],
+             "population": round(d["values"].get("population_worldpop_2023", 0)),
+             **{sid: round(d["values"].get(wp, 0)) for sid, _l, wp, _g, _b in PEOPLE_LADDER}}
+            for d in by_district.values()), key=lambda d: -d["within_250m"]),
+        "references": references,
+        "limitations": PEOPLE_LIMITATIONS,
+    }
 
 
 # ---------------------------------------------------------------- generic screening
