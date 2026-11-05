@@ -267,3 +267,30 @@ export type PeopleResponse = {
   references: ReportedFigure[];
   limitations: string[];
 };
+
+// ---- National district map (GET /national/districts) ----
+
+export type NationalDistrictProperties = {
+  pcode: string;
+  name: string;
+  region: string;
+  population: number | null;
+  buildings: number | null;
+  area_km2: number | null;
+  density: number | null;
+  in_pilot: boolean;
+};
+
+export type NationalTotals = {
+  districts: number;
+  with_estimates: number;
+  population: number;
+  buildings: number;
+  area_km2: number;
+  density: number | null;
+};
+
+export type NationalResponse = FeatureCollection<NationalDistrictProperties> & {
+  totals: NationalTotals;
+  limitations: string[];
+};

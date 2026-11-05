@@ -531,6 +531,14 @@
 .legend-list { display: flex; flex-direction: column; gap: 2px; }
 .legend-static { padding-top: 8px; border-top: 1px solid var(--line); gap: 4px; }
 .legend-static li { display: flex; align-items: center; gap: 8px; color: var(--text-2); }
+/* Density classes sit edge to edge, so they read as one continuous scale */
+.legend-ramp { padding-top: 8px; border-top: 1px solid var(--line); }
+.legend-title { margin: 0 0 6px; font-size: 12px; font-weight: 500; color: var(--text); }
+.legend-ramp .legend-static { padding-top: 0; border-top: 0; gap: 0; }
+.legend-ramp .legend-static li { font-size: 12px; line-height: 1.5; }
+.legend-ramp .key-area { height: 18px; }
+.legend-ramp .key-area::before { inset: 0; border-radius: 0; opacity: 1; }
+.legend-ramp .legend-static li:last-child { margin-top: 6px; }
 .legend-item {
   display: flex; align-items: center; gap: 8px;
   width: 100%;
@@ -806,6 +814,8 @@
 .layer-note { font-size: 12px; color: var(--text-3); white-space: nowrap; padding-top: 2px; }
 .layer-summary { font-size: 13px; color: var(--text-2); margin: 0; }
 .layer-count { font-size: 13px; color: var(--text-2); margin: 0; }
+.layer-status { font-size: 13px; color: var(--text); margin: 0; padding-left: 10px; border-left: 2px solid #8f62c9; }
+.layer.is-off .layer-status { color: var(--text-3); border-left-color: var(--line); }
 
 .class-list { display: flex; flex-direction: column; margin: 0 -6px; }
 .class-toggle {

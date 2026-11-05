@@ -11,6 +11,7 @@ export const HAZARD_ID = "flood_2023_observed";
 export const FLOOD_LAYER = "flood-2023-observed";
 export const ASSETS_LAYER = "osm-assets";
 export const SETTLEMENTS_LAYER = "grid3-settlements";
+export const POPULATION_LAYER = "district-population";
 
 // Free basemaps from OpenFreeMap (built on OpenStreetMap data), no API key needed
 export const BASEMAPS = {
@@ -27,7 +28,7 @@ export const FALLBACK_STYLE: StyleSpecification = {
 };
 
 // Overlay sources we own; they are carried across basemap changes
-export const OVERLAY_SOURCES = ["districts", "assets", "hazard", "settlements", "proximity", "sites"];
+export const OVERLAY_SOURCES = ["national", "districts", "assets", "hazard", "settlements", "proximity", "sites"];
 
 export const WORKSPACES: { id: Workspace; label: string }[] = [
   { id: "layers", label: "Layers" },
@@ -107,7 +108,20 @@ export const MAP_LAYER_GROUPS: Record<string, string[]> = {
   "osm-assets": ["asset-areas", "asset-lines-halo", "asset-lines", "asset-power-lines", "asset-points"],
   "grid3-settlements": ["settlement-fill", "settlement-outline"],
   "flood-2023-observed": ["hazard-fill", "hazard-line"],
+  "district-population": ["national-fill", "national-line"],
 };
+
+// Layers that start switched off (the national map is large, so it loads only when asked for)
+export const LAYERS_OFF_AT_START = ["district-population"];
+
+// People per km² by district: class breaks and a sequential violet ramp, light to dark against each basemap.
+// Violet stays clear of the flood cyan and of the red, orange and yellow kept for exposure status.
+export const DENSITY_BREAKS = [50, 100, 250, 500, 1000, 5000];
+export const DENSITY_COLOURS = {
+  dark: ["#2b2440", "#3d2f63", "#55398a", "#7046ac", "#8f62c9", "#b48ee0", "#ddc9f5"],
+  light: ["#efe9f8", "#dccff0", "#c3ade4", "#a487d3", "#8463bd", "#63439f", "#432a78"],
+};
+export const DENSITY_NO_DATA = "#6e8496";
 
 // Theme order in the Layers panel, with plain names
 export const THEMES: { id: string; label: string }[] = [

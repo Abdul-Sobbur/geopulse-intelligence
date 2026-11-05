@@ -7,7 +7,9 @@ import type {
   StyleSpecification,
 } from "maplibre-gl";
 
-import { type BasemapId, CATEGORY_COLOURS, OVERLAY_SOURCES, STATUS_COLOURS } from "../config";
+import {
+  type BasemapId, CATEGORY_COLOURS, DENSITY_BREAKS, DENSITY_COLOURS, DENSITY_NO_DATA, OVERLAY_SOURCES, STATUS_COLOURS,
+} from "../config";
 
 // GeoJSON passed straight to a MapLibre source
 export type SourceData = GeoJSONSourceSpecification["data"];
@@ -28,6 +30,13 @@ export function categoryColours(basemap: BasemapId): Record<string, string> {
 // Colour each feature by its category
 export function categoryColour(basemap: BasemapId): ExpressionSpecification {
   return expr(["match", ["get", "category"], ...Object.entries(categoryColours(basemap)).flat(), "#8a9aa8"]);
+}
+
+// National map: colour each district by people per km², grey where there is no estimate
+export function densityColour(basemap: BasemapId): ExpressionSpecification {
+  const [first, ...rest] = DENSITY_COLOURS[basemap];
+  const steps = DENSITY_BREAKS.flatMap((b, i) => [b, rest[i]]);
+  return expr(["case", ["==", ["get", "density"], null], DENSITY_NO_DATA, ["step", ["get", "density"], first, ...steps]]);
 }
 
 // Exposure status lives in MapLibre "feature state" (set without reloading data)

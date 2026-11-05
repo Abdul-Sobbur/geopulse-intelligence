@@ -1,0 +1,42 @@
+{
+  "id": "district-population",
+  "title": "Population density by district",
+  "summary": "How many people live in each of Ghana's 260 districts, and how densely, from a population model.",
+  "theme": "people",
+  "role": "exposure",
+  "evidence": "Modelled estimate",
+  "geometry": "polygon",
+  "status": "live",
+  "version": "1.0",
+  "coverage": {
+    "scope": "national",
+    "country": "GH"
+  },
+  "temporal": {
+    "kind": "snapshot",
+    "start": "2023-01-01",
+    "note": "WorldPop estimate for 2023"
+  },
+  "sources": [
+    "D-01",
+    "D-09",
+    "D-11"
+  ],
+  "method": "WorldPop 2023 100 m people per cell summed inside each district boundary in Google Earth Engine; Open Buildings v3 footprints with confidence 0.75 or more counted by centroid; density is people divided by the district's geodesic area.",
+  "limitations": [
+    "WorldPop 2023 totals 33.4 million people, about 8.5% more than the 2021 census (30.8 million). By region the gap is +5% to +10%, and +16% in Savannah, so compare districts by density or share rather than by exact counts.",
+    "Population is modelled from satellite imagery and census totals, not counted, so small or new settlements can be missed or misplaced.",
+    "Building counts include only footprints Google's model is fairly sure of, and miss buildings under trees or in very dense areas.",
+    "Boundaries on the map are simplified to about 200 m for display; use them for reading patterns, not for measuring."
+  ],
+  "storage": {
+    "kind": "postgis",
+    "table": "district_indicators",
+    "id_column": "pcode",
+    "pcode_column": "pcode"
+  },
+  "style": {
+    "colour": "#8A66C4",
+    "opacity": 0.75
+  }
+}

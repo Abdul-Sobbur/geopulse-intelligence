@@ -11,20 +11,22 @@ import Segmented from "./components/Segmented";
 import TopBar from "./components/TopBar";
 import {
   API_URL, BASEMAPS, type BasemapId, CATEGORY_COLOURS, CLICKABLE_ASSET_LAYERS, FILTERED_LAYERS,
-  FLOOD_COLOURS, FLOOD_LAYER, HAZARD_ID, LAYER_TYPES, MAP_LAYER_GROUPS, PILOT_ID, SITE_LETTERS,
+  FLOOD_COLOURS, FLOOD_LAYER, HAZARD_ID, LAYERS_OFF_AT_START, LAYER_TYPES, MAP_LAYER_GROUPS, PILOT_ID,
+  POPULATION_LAYER, SITE_LETTERS,
 } from "./config";
 import {
   comparisonQuery, dashboardQuery, errorMessage, fetchJson, loadBasemap, loadFloodScreening, peopleQuery, waitForApi,
 } from "./lib/api";
 import { anchorPoint, circleRing, geometryBounds } from "./lib/geo";
 import {
-  DIMMED, FLAGGED, STATUS, type SourceData, categoryColour, categoryColours, expr, filterExpr, layerFilter,
+  DIMMED, FLAGGED, STATUS, type SourceData, categoryColour, categoryColours, densityColour, expr, filterExpr, layerFilter,
   overlayLayers, settlementFilter, statusColour, withOverlays,
 } from "./lib/mapStyle";
-import { assetPopupHtml, settlementPopupHtml } from "./lib/popups";
+import { assetPopupHtml, nationalPopupHtml, settlementPopupHtml } from "./lib/popups";
 import type {
   AssetType, Bounds, CandidateSite, CatalogResponse, PeopleResponse, ComparisonResponse, DashboardResponse, District, DistrictProperties,
-  ExposureCounts, Feature, FeatureCollection, HazardLayer, PickTarget, ProximityFeature, ProximityResponse,
+  ExposureCounts, Feature, FeatureCollection, HazardLayer, NationalDistrictProperties, NationalResponse, PickTarget,
+  ProximityFeature, ProximityResponse,
   ScreeningAsset, ScreeningResponse, SettlementScreening, SummaryRow, Workspace,
 } from "./types";
 import AssetsPanel from "./workspaces/AssetsPanel";
@@ -74,7 +76,8 @@ export default function App() {
   const [selectedPcode, setSelectedPcode] = useState("");
   const [query, setQuery] = useState("");
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
-  const [hiddenLayers, setHiddenLayers] = useState<string[]>([]);
+  const [hiddenLayers, setHiddenLayers] = useState<string[]>(LAYERS_OFF_AT_START);
+  const [national, setNational] = useState<{ data: NationalResponse | null; error: string | null } | null>(null);
   const [highlightExposure, setHighlightExposure] = useState(true);
   const [nearM, setNearM] = useState(250);
   const [screeningResult, setScreeningResult] = useState<{
@@ -303,6 +306,9 @@ export default function App() {
       p, districtNamesRef.current, settlementScreeningRef.current.get(Number(p.settlement_id)),
     ));
   });
+  const onNationalClick = useEffectEvent((lngLat: maplibregl.LngLat, p: Record<string, unknown>) => {
+    openPopup(lngLat, nationalPopupHtml(p as unknown as NationalDistrictProperties));
+  });
   const onEscape = useEffectEvent(() => endPickMode());
 
   // Create the map (after fetching the basemap style) and load data once
@@ -368,7 +374,28 @@ export default function App() {
           addData("districts", districtsFc as unknown as SourceData);
           addData("assets", assetsFc as unknown as SourceData);
 
-          // Layers are drawn in this order (first = bottom)
+          // Layers are drawn in this order (first = bottom).
+          // The national map is empty and hidden until it is switched on in the Layers tab.
+          addData("national", { type: "FeatureCollection", features: [] });
+          map.addLayer({
+            id: "national-fill", type: "fill", source: "national", layout: { visibility: "none" },
+            paint: { "fill-color": densityColour("dark"), "fill-opacity": 0.78 },
+          });
+          map.addLayer({
+            id: "national-line", type: "line", source: "national", layout: { visibility: "none" },
+            paint: { "line-color": "#0e1b26", "line-width": 0.5, "line-opacity": 0.7 },
+          });
+          // District popup on the national map, unless a pilot feature was clicked at the same spot
+          map.on("click", "national-fill", (e) => {
+            if (pickModeRef.current) return;
+            const above = [...CLICKABLE_ASSET_LAYERS, "settlement-fill"].filter((id) => map.getLayer(id));
+            if (map.queryRenderedFeatures(e.point, { layers: above }).length) return;
+            const feature = e.features?.[0];
+            if (feature) onNationalClick(e.lngLat, feature.properties as Record<string, unknown>);
+          });
+          map.on("mouseenter", "national-fill", () => { if (!pickModeRef.current) cursor("pointer"); });
+          map.on("mouseleave", "national-fill", () => { if (!pickModeRef.current) cursor(""); });
+
           map.addLayer({
             id: "district-fill", type: "fill", source: "districts",
             paint: { "fill-color": "#9fb3c2", "fill-opacity": 0.04 },
@@ -607,6 +634,8 @@ export default function App() {
     map.setPaintProperty("asset-points", "circle-color", colour);
     map.setPaintProperty("asset-points", "circle-stroke-color", statusColour(basemap === "light" ? "#ffffff" : "#0e1b26"));
     map.setPaintProperty("district-selected", "line-color", basemap === "light" ? "#132433" : "#e6eef3");
+    map.setPaintProperty("national-fill", "fill-color", densityColour(basemap));
+    map.setPaintProperty("national-line", "line-color", basemap === "light" ? "#ffffff" : "#0e1b26");
   }, [basemap, mapReady, styleEpoch]);
 
   // Update asset layer filters when categories or district change
@@ -831,7 +860,38 @@ export default function App() {
   }
 
   function toggleLayer(id: string) {
+    const turningOn = hiddenLayers.includes(id);
     setHiddenLayers((current) => (current.includes(id) ? current.filter((l) => l !== id) : [...current, id]));
+    if (id === POPULATION_LAYER) {
+      if (turningOn) void showNational();
+      else fitToSelection();
+    }
+  }
+
+  // The national map: load all districts the first time it is switched on, then zoom out to Ghana
+  async function showNational() {
+    const fit = (data: NationalResponse) => {
+      if (data.bbox) mapRef.current?.fitBounds(data.bbox, { padding: 40, duration: 900 });
+    };
+    if (national?.data) {
+      fit(national.data);
+      return;
+    }
+    setNational({ data: null, error: null });
+    try {
+      const data = await fetchJson<NationalResponse>(`${API_URL}/national/districts?pilot_id=${PILOT_ID}`);
+      setOverlayData("national", data as unknown as SourceData);
+      setNational({ data, error: null });
+      fit(data);
+    } catch (err) {
+      setNational({ data: null, error: errorMessage(err) });
+    }
+  }
+
+  // Back to the selected district, or the whole pilot
+  function fitToSelection() {
+    const target = selectedPcode ? districts.find((d) => d.pcode === selectedPcode)?.bounds : pilotBoundsRef.current;
+    if (target) mapRef.current?.fitBounds(target, { padding: 48, duration: 800 });
   }
 
   function setShowFlood(on: boolean) {
@@ -851,6 +911,17 @@ export default function App() {
   const categories = [...new Set(assetTypes.map((t) => t.category))];
   const nextSite = SITE_LETTERS.find((l) => !sites.some((s) => s.id === l));
 
+  // One line under the national layer in the Layers tab
+  const nationalOn = !hiddenLayers.includes(POPULATION_LAYER);
+  let nationalStatus = "Switch on to load all 260 districts and zoom out to Ghana.";
+  if (national?.error) nationalStatus = `Couldn't load the national map: ${national.error}`;
+  else if (national && !national.data) nationalStatus = "Loading all districts…";
+  else if (national?.data) {
+    const t = national.data.totals;
+    nationalStatus = `About ${(t.population / 1e6).toFixed(1)} million people in ${t.with_estimates} districts, ` +
+      `${Math.round(t.density ?? 0)} per km² on average. Click a district for its figures.`;
+  }
+
   let panel = null;
   if (mapReady) {
     switch (workspace) {
@@ -862,6 +933,7 @@ export default function App() {
             assetTypes={assetTypes} counts={counts} colours={colours}
             hiddenCategories={hiddenCategories} onToggleCategory={toggleCategory}
             settlementFootprints={settlementCount} scopeLabel={scopeLabel}
+            layerStatus={{ [POPULATION_LAYER]: nationalStatus }}
           />
         ) : (
           <AssetsPanel
@@ -975,6 +1047,8 @@ export default function App() {
               showFlood={showFlood}
               floodAvailable={!!hazard}
               screeningOn={screeningOn}
+              densityOn={nationalOn && !!national?.data}
+              basemap={basemap}
             />
           )}
         </main>

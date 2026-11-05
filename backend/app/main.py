@@ -19,6 +19,7 @@ import numpy as np
 import rasterio
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, Response
 from rasterio.windows import Window
 from sqlalchemy import text
@@ -50,6 +51,8 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+# Compress larger responses (the national map is several hundred kilobytes of GeoJSON)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # ---------------------------------------------------------------- system
@@ -139,6 +142,8 @@ PEOPLE_LIMITATIONS = [
     "People are assumed to be spread evenly within each 100 m cell.",
     "Reported figures measure different things (displaced or affected) over different areas, so they are a "
     "check on scale, not a validation.",
+    "WorldPop 2023 totals about 8.5% more people than the 2021 census for Ghana as a whole (+5% to +10% by "
+    "region, +16% in Savannah); in the pilot districts the gap is +3% to +12%. Read counts as approximate.",
 ]
 
 
@@ -203,6 +208,94 @@ def people(
         "references": references,
         "limitations": PEOPLE_LIMITATIONS,
     }
+
+
+# ---------------------------------------------------------------- national districts (Wave 1)
+
+NATIONAL_INDICATORS = ("population_worldpop_2023", "buildings_075", "area_km2")
+NATIONAL_SIMPLIFY_DEG = 0.002   # about 200 m: enough for a whole-country map, and keeps the payload small
+
+
+def national_collection(rows) -> dict:
+    """Build the national district map from one row per district (pure, so it is testable without a database)."""
+    features, xs, ys = [], [], []
+    totals = {"population": 0.0, "buildings": 0.0, "area_km2": 0.0, "area_with_estimates": 0.0}
+    for r in rows:
+        pop, bld, area = r["population"], r["buildings"], r["area_km2"]
+        density = round(pop / area, 1) if pop is not None and area else None
+        for key, v in (("population", pop), ("buildings", bld), ("area_km2", area)):
+            totals[key] += v or 0
+        if pop is not None:
+            totals["area_with_estimates"] += area or 0
+        x0, y0, x1, y1 = r["xmin"], r["ymin"], r["xmax"], r["ymax"]
+        xs += [x0, x1]
+        ys += [y0, y1]
+        features.append({
+            "type": "Feature",
+            "geometry": json.loads(r["geometry"]),
+            "properties": {
+                "pcode": r["pcode"], "name": r["name"], "region": r["region"],
+                "population": round(pop) if pop is not None else None,
+                "buildings": round(bld) if bld is not None else None,
+                "area_km2": round(area, 1) if area is not None else None,
+                "density": density,
+                "in_pilot": bool(r["in_pilot"]),
+            },
+        })
+    return {
+        "type": "FeatureCollection",
+        "bbox": [min(xs), min(ys), max(xs), max(ys)] if xs else None,
+        "features": features,
+        "totals": {
+            "districts": len(features),
+            "with_estimates": sum(1 for f in features if f["properties"]["population"] is not None),
+            "population": round(totals["population"]),
+            "buildings": round(totals["buildings"]),
+            "area_km2": round(totals["area_km2"]),
+            # Density over the districts that have an estimate, so a missing district does not dilute it
+            "density": (round(totals["population"] / totals["area_with_estimates"], 1)
+                        if totals["area_with_estimates"] else None),
+        },
+    }
+
+
+@app.get("/national/districts", tags=["people"])
+def national_districts(pilot_id: str = Query("lower_volta", max_length=40)):
+    """All of Ghana's districts with modelled population, buildings, area and density, for the national map.
+
+    Figures come from scripts/national_indicators.py (district_indicators). Geometry is simplified to about
+    200 m, so use it for display only, never for measuring.
+    """
+    sql = text(f"""
+        WITH ind AS (
+            SELECT pcode,
+                   max(value) FILTER (WHERE indicator = 'population_worldpop_2023') AS population,
+                   max(value) FILTER (WHERE indicator = 'buildings_075') AS buildings,
+                   max(value) FILTER (WHERE indicator = 'area_km2') AS area_km2
+            FROM district_indicators
+            WHERE indicator = ANY(:ids)
+            GROUP BY pcode
+        )
+        SELECT b.pcode, b.name, b.parent_name AS region,
+               i.population, i.buildings,
+               COALESCE(i.area_km2, ST_Area(b.geom::geography) / 1e6) AS area_km2,
+               ST_AsGeoJSON(ST_SimplifyPreserveTopology(b.geom, {NATIONAL_SIMPLIFY_DEG}), 4) AS geometry,
+               ST_XMin(b.geom) AS xmin, ST_YMin(b.geom) AS ymin, ST_XMax(b.geom) AS xmax, ST_YMax(b.geom) AS ymax,
+               EXISTS (SELECT 1 FROM pilot_districts p WHERE p.pcode = b.pcode AND p.pilot_id = :pid) AS in_pilot
+        FROM admin_boundaries b
+        LEFT JOIN ind i ON i.pcode = b.pcode
+        ORDER BY b.pcode
+    """)
+    with engine.connect() as conn:
+        if not _has_table(conn, "district_indicators"):
+            raise HTTPException(status_code=404, detail="No national estimates yet: run scripts/national_indicators.py")
+        rows = conn.execute(sql, {"ids": list(NATIONAL_INDICATORS), "pid": pilot_id}).mappings().all()
+    body = national_collection(rows)
+    if body["totals"]["with_estimates"] == 0:
+        raise HTTPException(status_code=404, detail="No national estimates yet: run scripts/national_indicators.py")
+    layer = get_catalog().layers.get("district-population")
+    body["limitations"] = layer.limitations if layer else []
+    return body
 
 
 # ---------------------------------------------------------------- generic screening

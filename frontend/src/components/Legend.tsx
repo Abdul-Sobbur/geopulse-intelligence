@@ -1,7 +1,17 @@
 // Map legend: what is drawn, and click a category to show or hide it
 import { useState } from "react";
 
-import { CATEGORY_LABELS, CATEGORY_ORDER, FLOOD_COLOURS, STATUS_COLOURS } from "../config";
+import {
+  type BasemapId, CATEGORY_LABELS, CATEGORY_ORDER, DENSITY_BREAKS, DENSITY_COLOURS, DENSITY_NO_DATA, FLOOD_COLOURS,
+  STATUS_COLOURS,
+} from "../config";
+
+// "Under 50", "50 to 100", ... "5,000 or more"
+const DENSITY_LABELS = [
+  `Under ${DENSITY_BREAKS[0]}`,
+  ...DENSITY_BREAKS.slice(1).map((b, i) => `${DENSITY_BREAKS[i].toLocaleString()} to ${b.toLocaleString()}`),
+  `${DENSITY_BREAKS.at(-1)!.toLocaleString()} or more`,
+];
 
 type Props = {
   categories: string[];
@@ -11,9 +21,13 @@ type Props = {
   showFlood: boolean;
   floodAvailable: boolean;
   screeningOn: boolean;
+  densityOn: boolean;
+  basemap: BasemapId;
 };
 
-export default function Legend({ categories, colours, hidden, onToggle, showFlood, floodAvailable, screeningOn }: Props) {
+export default function Legend({
+  categories, colours, hidden, onToggle, showFlood, floodAvailable, screeningOn, densityOn, basemap,
+}: Props) {
   const ordered = CATEGORY_ORDER.filter((c) => categories.includes(c));
   // Starts folded on small screens, where it would cover most of the map
   const [open, setOpen] = useState(() => typeof window === "undefined" || window.innerWidth > 860);
@@ -61,6 +75,20 @@ export default function Legend({ categories, colours, hidden, onToggle, showFloo
               <li><i className="key key-ring" style={{ color: STATUS_COLOURS.in_ambiguous }} />In ambiguous water</li>
               <li><i className="key key-ring" style={{ color: STATUS_COLOURS.near }} />Near observed water</li>
             </ul>
+          )}
+
+          {densityOn && (
+            <div className="legend-ramp">
+              <p className="legend-title">People per km², 2023</p>
+              <ul className="legend-list legend-static">
+                {[...DENSITY_LABELS].reverse().map((label, i) => (
+                  <li key={label}>
+                    <i className="key key-area" style={{ color: DENSITY_COLOURS[basemap].at(-1 - i) }} />{label}
+                  </li>
+                ))}
+                <li><i className="key key-area" style={{ color: DENSITY_NO_DATA }} />No estimate</li>
+              </ul>
+            </div>
           )}
         </>
       )}

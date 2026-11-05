@@ -13,6 +13,8 @@ type Props = {
   onToggleCategory: (category: string) => void;
   settlementFootprints: number | null;
   scopeLabel: string;
+  // An optional status line under a layer (loading, totals or an error)
+  layerStatus?: Record<string, string>;
 };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -43,7 +45,7 @@ function SourceLine({ source }: { source: CatalogSource }) {
 
 export default function LayersPanel({
   catalog, hiddenLayers, onToggleLayer, assetTypes, counts, colours, hiddenCategories, onToggleCategory,
-  settlementFootprints, scopeLabel,
+  settlementFootprints, scopeLabel, layerStatus = {},
 }: Props) {
   const sources = new Map(catalog.sources.map((s) => [s.id, s]));
   const live = catalog.layers.filter((l) => l.status === "live");
@@ -54,7 +56,7 @@ export default function LayersPanel({
         <h2>Layers</h2>
         <p>
           <span className="figure">{live.length}</span> layers, each with its source, date and limits.
-          Counts are for {scopeLabel}.
+          Counts are for {scopeLabel} unless a layer covers all of Ghana.
         </p>
       </div>
 
@@ -85,6 +87,7 @@ export default function LayersPanel({
                     )}
                   </div>
                   <p className="layer-summary">{layer.summary}</p>
+                  {layerStatus[layer.id] && <p className="layer-status" role="status">{layerStatus[layer.id]}</p>}
 
                   {layer.id === "osm-assets" && (
                     <ul className="class-list">
