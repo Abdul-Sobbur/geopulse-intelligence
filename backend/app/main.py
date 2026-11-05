@@ -61,8 +61,13 @@ def health():
         with engine.connect() as conn:
             postgis = conn.execute(text("SELECT postgis_lib_version()")).scalar()
     except SQLAlchemyError as err:
-        # The reason goes to the server log only (e.g. "password authentication failed"), never to callers
-        reason = str(getattr(err, "orig", None) or err).strip().splitlines()[0][:300]
+        # The reason goes to the server log only (e.g. "password authentication failed"), never to callers.
+        # Keep every line (one per address tried) and blank out the password if it appears anywhere.
+        reason = " | ".join(line.strip() for line in str(getattr(err, "orig", None) or err).splitlines() if line.strip())
+        for secret in (os.environ.get("DB_PASSWORD"),):
+            if secret:
+                reason = reason.replace(secret, "***")
+        reason = reason[:800]
         logging.getLogger("uvicorn.error").warning("Health check: database unavailable: %s", reason)
         raise HTTPException(status_code=503, detail="Database unavailable")
     return {"status": "ok", "database": "connected", "postgis": postgis}
