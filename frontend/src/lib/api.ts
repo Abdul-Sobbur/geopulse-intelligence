@@ -6,7 +6,7 @@ import {
   SETTLEMENTS_LAYER,
 } from "../config";
 import type {
-  CandidateSite, ScreeningAsset, ScreeningResponse, ScreenResponse, ScreenStatus, SettlementScreening,
+  CandidateSite, MapDataManifest, ScreeningAsset, ScreeningResponse, ScreenResponse, ScreenStatus, SettlementScreening,
   SettlementScreeningResponse,
 } from "../types";
 
@@ -37,6 +37,33 @@ export function peopleQuery(pcode: string): string {
 
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// Static map data built at deploy time (scripts/build_map_data.py), served next to the app
+export const DATA_URL = `${import.meta.env.BASE_URL}data/`;
+
+// The manifest of the static map data, or null if there is none (local development, or the build skipped it)
+export async function loadManifest(): Promise<MapDataManifest | null> {
+  try {
+    const response = await fetch(`${DATA_URL}manifest.json`, { cache: "no-cache" });
+    // A dev server answers unknown paths with the app's HTML page, so check it really is JSON
+    if (!response.ok || !(response.headers.get("content-type") ?? "").includes("json")) return null;
+    const manifest = (await response.json()) as MapDataManifest;
+    return manifest.version === 1 ? manifest : null;
+  } catch {
+    return null;
+  }
+}
+
+// Where to load a layer from: the static copy if the build made one, otherwise the API
+export function layerUrl(manifest: MapDataManifest | null, name: string, apiPath: string): string {
+  const file = manifest?.files[name];
+  return file ? `${DATA_URL}${file}` : `${API_URL}${apiPath}`;
+}
+
+// Absolute address of a static file (PMTiles needs a full URL)
+export function dataFileUrl(file: string): string {
+  return new URL(`${DATA_URL}${file}`, window.location.href).href;
 }
 
 // Fetch a basemap style; if it can't be reached, use a plain background so the data still shows

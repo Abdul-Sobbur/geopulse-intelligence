@@ -4,6 +4,7 @@ import type {
   FilterSpecification,
   GeoJSONSourceSpecification,
   LayerSpecification,
+  SourceSpecification,
   StyleSpecification,
 } from "maplibre-gl";
 
@@ -83,8 +84,9 @@ export function withOverlays(
   next: StyleSpecification,
   layers: LayerSpecification[],
   data: Record<string, SourceData>,
+  otherSources: Record<string, SourceSpecification> = {},
 ): StyleSpecification {
-  const sources = { ...next.sources };
+  const sources = { ...next.sources, ...otherSources };
   for (const [id, value] of Object.entries(data)) sources[id] = { type: "geojson", data: value };
   return { ...next, sources, layers: [...next.layers, ...layers] };
 }

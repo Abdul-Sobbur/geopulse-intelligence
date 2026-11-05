@@ -224,3 +224,4 @@ data/raw/
 data/processed/
 # Frontend helper code (the Python 'lib/' rule above would hide it)
 !frontend/src/lib/
+frontend/public/data/

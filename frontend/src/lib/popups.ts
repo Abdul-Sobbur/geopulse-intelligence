@@ -96,22 +96,23 @@ export function settlementPopupHtml(
 }
 
 // Modelled counts are shown to the nearest hundred: the model is not precise enough for more
-function approx(value: number | null): string {
-  if (value === null) return "No estimate";
+function approx(value: number | null | undefined): string {
+  if (value == null) return "No estimate";
   return (value >= 1000 ? Math.round(value / 100) * 100 : Math.round(value)).toLocaleString();
 }
 
 export function nationalPopupHtml(p: NationalDistrictProperties): string {
-  const density = p.density === null ? "No estimate" : `${Math.round(p.density).toLocaleString()} people per km²`;
+  // Vector tiles leave out empty values, so a missing figure arrives as undefined rather than null
+  const density = p.density == null ? "No estimate" : `${Math.round(p.density).toLocaleString()} people per km²`;
   return `
     <div class="popup">
       <h3>${escapeHtml(p.name)}</h3>
-      <p class="popup-type">${escapeHtml(p.region)} Region, ${escapeHtml(p.pcode)}${p.in_pilot ? ", in the Lower Volta pilot" : ""}</p>
+      <p class="popup-type">${escapeHtml(p.region)} Region, ${escapeHtml(p.pcode)}${p.in_pilot === true || String(p.in_pilot) === "true" ? ", in the Lower Volta pilot" : ""}</p>
       <dl>
         ${row("Density", escapeHtml(density))}
         ${row("Residents", `about ${escapeHtml(approx(p.population))}`)}
         ${row("Buildings", escapeHtml(approx(p.buildings)))}
-        ${row("Area", p.area_km2 === null ? "–" : `${Math.round(p.area_km2).toLocaleString()} km²`)}
+        ${row("Area", p.area_km2 == null ? "–" : `${Math.round(p.area_km2).toLocaleString()} km²`)}
         ${row("Source", "WorldPop 2023 and Google Open Buildings v3")}
       </dl>
       <p class="popup-warning">Modelled estimate. WorldPop 2023 counts about 8.5% more people than the 2021 census for Ghana as a whole.</p>

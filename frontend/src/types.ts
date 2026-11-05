@@ -294,3 +294,18 @@ export type NationalResponse = FeatureCollection<NationalDistrictProperties> & {
   totals: NationalTotals;
   limitations: string[];
 };
+
+// What the national map needs before any district is drawn
+export type NationalSummary = { bbox: Bounds | null; totals: NationalTotals; limitations: string[] };
+
+// ---- Static map data (frontend/public/data/manifest.json, written by scripts/build_map_data.py) ----
+
+export type MapDataManifest = {
+  version: number;
+  built_at: string;
+  api: string;
+  files: Record<string, string>;
+  counts: Record<string, number>;
+  skipped: string[];
+  national: (NationalSummary & { pmtiles: string | null; source_layer: string }) | null;
+};

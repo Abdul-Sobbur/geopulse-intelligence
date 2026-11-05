@@ -1,8 +1,11 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
-import type { FilterSpecification, LayerSpecification, Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
+import type {
+  FilterSpecification, LayerSpecification, Map as MapLibreMap, SourceSpecification, StyleSpecification,
+} from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
+import { Protocol } from "pmtiles";
 import "./App.css";
 
 import DashboardView from "./components/DashboardView";
@@ -15,7 +18,8 @@ import {
   POPULATION_LAYER, SITE_LETTERS,
 } from "./config";
 import {
-  comparisonQuery, dashboardQuery, errorMessage, fetchJson, loadBasemap, loadFloodScreening, peopleQuery, waitForApi,
+  comparisonQuery, dashboardQuery, dataFileUrl, errorMessage, fetchJson, layerUrl, loadBasemap, loadFloodScreening,
+  loadManifest, peopleQuery, waitForApi,
 } from "./lib/api";
 import { anchorPoint, circleRing, geometryBounds } from "./lib/geo";
 import {
@@ -25,7 +29,8 @@ import {
 import { assetPopupHtml, nationalPopupHtml, settlementPopupHtml } from "./lib/popups";
 import type {
   AssetType, Bounds, CandidateSite, CatalogResponse, PeopleResponse, ComparisonResponse, DashboardResponse, District, DistrictProperties,
-  ExposureCounts, Feature, FeatureCollection, HazardLayer, NationalDistrictProperties, NationalResponse, PickTarget,
+  ExposureCounts, Feature, FeatureCollection, HazardLayer, MapDataManifest, NationalDistrictProperties, NationalResponse,
+  NationalSummary, PickTarget,
   ProximityFeature, ProximityResponse,
   ScreeningAsset, ScreeningResponse, SettlementScreening, SummaryRow, Workspace,
 } from "./types";
@@ -38,6 +43,8 @@ import ReportsPanel from "./workspaces/ReportsPanel";
 
 // Tell MapLibre where its worker file is: in a production build it is not next to the bundled code
 maplibregl.setWorkerUrl(workerUrl);
+// Vector tiles in one static file (PMTiles), read with HTTP range requests straight from GitHub Pages
+maplibregl.addProtocol("pmtiles", new Protocol().tile);
 
 const EMPTY: SourceData = { type: "FeatureCollection", features: [] };
 const PROXIMITY_LAYERS = ["proximity-fill", "proximity-line", "proximity-centre"];
@@ -48,6 +55,9 @@ export default function App() {
   const mapRef = useRef<MapLibreMap | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const pilotBoundsRef = useRef<Bounds | null>(null);
+  const manifestRef = useRef<MapDataManifest | null>(null);
+  // Sources that are not GeoJSON (the national vector tiles), carried across basemap changes
+  const otherSourcesRef = useRef<Record<string, SourceSpecification>>({});
   const warningByTypeRef = useRef(new Map<string, string | null>());
   const districtNamesRef = useRef(new Map<string, string>());
   const screeningRef = useRef(new Map<number, ScreeningAsset>());
@@ -77,7 +87,9 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
   const [hiddenLayers, setHiddenLayers] = useState<string[]>(LAYERS_OFF_AT_START);
-  const [national, setNational] = useState<{ data: NationalResponse | null; error: string | null } | null>(null);
+  const [national, setNational] = useState<{ data: NationalSummary | null; error: string | null } | null>(null);
+  // The map can draw from static files before the free API has woken; figures wait for this
+  const [apiReady, setApiReady] = useState(false);
   const [highlightExposure, setHighlightExposure] = useState(true);
   const [nearM, setNearM] = useState(250);
   const [screeningResult, setScreeningResult] = useState<{
@@ -277,7 +289,7 @@ export default function App() {
     const layers: LayerSpecification[] = overlayLayers(map.getStyle());
     map.setStyle(style, {
       transformStyle: (_previous: StyleSpecification | undefined, next: StyleSpecification) =>
-        withOverlays(next, layers, overlayDataRef.current),
+        withOverlays(next, layers, overlayDataRef.current, otherSourcesRef.current),
     });
   }
 
@@ -341,8 +353,17 @@ export default function App() {
 
       map.on("load", async () => {
         try {
-          // The hosted API sleeps when idle; give it time to wake before loading data
-          await waitForApi();
+          // Map layers come from static files built at deploy time when there are some, so the map draws at
+          // once; otherwise from the API, which sleeps when idle and needs time to wake first.
+          const manifest = await loadManifest();
+          manifestRef.current = manifest;
+          if (manifest) {
+            void waitForApi().then(() => { if (!cancelled) setApiReady(true); });
+          } else {
+            await waitForApi();
+            setApiReady(true);
+          }
+          const url = (name: string, apiPath: string) => layerUrl(manifest, name, apiPath);
           const [districtsFc, assetsFc, typeList, hazardList, floodFc, settlementsFc, catalogData]: [
             FeatureCollection<DistrictProperties>,
             FeatureCollection,
@@ -352,15 +373,16 @@ export default function App() {
             FeatureCollection<{ adm2_pcode: string | null }> | null,
             CatalogResponse | null,
           ] = await Promise.all([
-            fetchJson<FeatureCollection<DistrictProperties>>(`${API_URL}/pilots/${PILOT_ID}/districts`),
-            fetchJson<FeatureCollection>(`${API_URL}/assets?limit=5000`),
-            fetchJson<AssetType[]>(`${API_URL}/asset-types`),
+            fetchJson<FeatureCollection<DistrictProperties>>(url("districts", `/pilots/${PILOT_ID}/districts`)),
+            fetchJson<FeatureCollection>(url("assets", "/assets?limit=5000")),
+            fetchJson<AssetType[]>(url("asset-types", "/asset-types")),
             // Hazard and settlement data are optional: the asset map still works without them
-            fetchJson<HazardLayer[]>(`${API_URL}/hazards`).catch(() => null),
-            fetchJson<SourceData>(`${API_URL}/hazards/${HAZARD_ID}/features`).catch(() => null),
-            fetchJson<FeatureCollection<{ adm2_pcode: string | null }>>(`${API_URL}/settlements`).catch(() => null),
+            fetchJson<HazardLayer[]>(url("hazards", "/hazards")).catch(() => null),
+            fetchJson<SourceData>(url("flood", `/hazards/${HAZARD_ID}/features`)).catch(() => null),
+            fetchJson<FeatureCollection<{ adm2_pcode: string | null }>>(url("settlements", "/settlements"))
+              .catch(() => null),
             // The layer catalogue: optional, so an older API still works
-            fetchJson<CatalogResponse>(`${API_URL}/catalog`).catch(() => null),
+            fetchJson<CatalogResponse>(url("catalog", "/catalog")).catch(() => null),
           ]);
 
           warningByTypeRef.current = new Map(typeList.map((t) => [t.asset_type, t.coverage_warning]));
@@ -375,14 +397,23 @@ export default function App() {
           addData("assets", assetsFc as unknown as SourceData);
 
           // Layers are drawn in this order (first = bottom).
-          // The national map is empty and hidden until it is switched on in the Layers tab.
-          addData("national", { type: "FeatureCollection", features: [] });
+          // The national map is hidden until it is switched on in the Layers tab. With vector tiles, only the
+          // tiles in view are downloaded, and only once it is visible; otherwise it starts empty.
+          const tiles = manifest?.national?.pmtiles;
+          const sourceLayer = tiles ? { "source-layer": manifest?.national?.source_layer ?? "districts" } : {};
+          if (tiles) {
+            const spec: SourceSpecification = { type: "vector", url: `pmtiles://${dataFileUrl(tiles)}` };
+            otherSourcesRef.current.national = spec;
+            map.addSource("national", spec);
+          } else {
+            addData("national", { type: "FeatureCollection", features: [] });
+          }
           map.addLayer({
-            id: "national-fill", type: "fill", source: "national", layout: { visibility: "none" },
+            id: "national-fill", type: "fill", source: "national", ...sourceLayer, layout: { visibility: "none" },
             paint: { "fill-color": densityColour("dark"), "fill-opacity": 0.78 },
           });
           map.addLayer({
-            id: "national-line", type: "line", source: "national", layout: { visibility: "none" },
+            id: "national-line", type: "line", source: "national", ...sourceLayer, layout: { visibility: "none" },
             paint: { "line-color": "#0e1b26", "line-width": 0.5, "line-opacity": 0.7 },
           });
           // District popup on the national map, unless a pilot feature was clicked at the same spot
@@ -681,7 +712,7 @@ export default function App() {
   // Load screening results and apply them as feature state (re-applied after a basemap change)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady) return;
+    if (!map || !mapReady || !apiReady) return;
     let cancelled = false;
     const hasSettlements = !!map.getSource("settlements");
     map.removeFeatureState({ source: "assets" });
@@ -715,7 +746,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [screeningOn, nearM, mapReady, styleEpoch]);
+  }, [screeningOn, nearM, mapReady, apiReady, styleEpoch]);
 
   // Draw site circles and re-run the comparison whenever sites or the radius change
   useEffect(() => {
@@ -732,7 +763,7 @@ export default function App() {
     overlayDataRef.current.sites = data;
     (map.getSource("sites") as maplibregl.GeoJSONSource | undefined)?.setData(data);
 
-    if (sites.length === 0) return;
+    if (sites.length === 0 || !apiReady) return;
 
     let cancelled = false;
     const key = comparisonQuery(sites, siteRadius);
@@ -747,11 +778,11 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [sites, siteRadius, mapReady]);
+  }, [sites, siteRadius, mapReady, apiReady]);
 
   // People near observed flooding (optional: an API without /people simply shows nothing)
   useEffect(() => {
-    if (!dashboardWanted || !mapReady) return;
+    if (!dashboardWanted || !mapReady || !apiReady) return;
     let cancelled = false;
     const key = peopleQuery(selectedPcode);
     fetchJson<PeopleResponse>(`${API_URL}/people?${key}`)
@@ -760,11 +791,11 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [dashboardWanted, selectedPcode, mapReady]);
+  }, [dashboardWanted, selectedPcode, mapReady, apiReady]);
 
   // Dashboard figures (also used for the flood readouts)
   useEffect(() => {
-    if (!dashboardWanted || !mapReady) return;
+    if (!dashboardWanted || !mapReady || !apiReady) return;
     let cancelled = false;
     const key = dashboardQuery(nearM, selectedPcode);
     fetchJson<DashboardResponse>(`${API_URL}/dashboard?${key}`)
@@ -777,7 +808,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [dashboardWanted, nearM, selectedPcode, mapReady]);
+  }, [dashboardWanted, nearM, selectedPcode, mapReady, apiReady]);
 
   // Asset counts for the current district selection
   const counts = useMemo(() => {
@@ -870,19 +901,29 @@ export default function App() {
 
   // The national map: load all districts the first time it is switched on, then zoom out to Ghana
   async function showNational() {
-    const fit = (data: NationalResponse) => {
-      if (data.bbox) mapRef.current?.fitBounds(data.bbox, { padding: 40, duration: 900 });
+    const fit = (summary: NationalSummary) => {
+      if (summary.bbox) mapRef.current?.fitBounds(summary.bbox, { padding: 40, duration: 900 });
     };
     if (national?.data) {
       fit(national.data);
       return;
     }
+    // Vector tiles: the summary is in the manifest and the map fetches tiles by itself
+    const fromTiles = manifestRef.current?.national;
+    if (fromTiles?.pmtiles) {
+      setNational({ data: fromTiles, error: null });
+      fit(fromTiles);
+      return;
+    }
     setNational({ data: null, error: null });
     try {
-      const data = await fetchJson<NationalResponse>(`${API_URL}/national/districts?pilot_id=${PILOT_ID}`);
+      const data = await fetchJson<NationalResponse>(
+        layerUrl(manifestRef.current, "national", `/national/districts?pilot_id=${PILOT_ID}`),
+      );
       setOverlayData("national", data as unknown as SourceData);
-      setNational({ data, error: null });
-      fit(data);
+      const summary = { bbox: data.bbox ?? null, totals: data.totals, limitations: data.limitations };
+      setNational({ data: summary, error: null });
+      fit(summary);
     } catch (err) {
       setNational({ data: null, error: errorMessage(err) });
     }
@@ -1029,6 +1070,9 @@ export default function App() {
               onChange={changeBasemap}
             />
             {basemapFailed && <span className="map-note">Basemap unavailable, showing data only</span>}
+            {mapReady && !apiReady && (
+              <span className="map-note" role="status">Waking the server for figures, up to a minute…</span>
+            )}
           </div>
 
           {pickMode && (

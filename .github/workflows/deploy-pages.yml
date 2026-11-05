@@ -1,4 +1,5 @@
-# Publish the web app to GitHub Pages on every push to main
+# Publish the web app, with a fresh copy of the map data, to GitHub Pages on every push to main.
+# After loading new data into the database, run it by hand (Actions > Deploy web app > Run workflow).
 name: Deploy web app
 
 on:
@@ -37,6 +38,16 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      # Map layers are saved as static files next to the app, so the map draws without waiting for the API.
+      # Neither step can break the deploy: without them the app simply loads its layers from the API.
+      - name: Install tippecanoe (makes the national vector tiles)
+        continue-on-error: true
+        working-directory: .
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tippecanoe
+      - name: Build static map data from the API
+        continue-on-error: true
+        working-directory: .
+        run: python3 scripts/build_map_data.py --api "${{ vars.API_URL }}"
       - name: Build for GitHub Pages
         env:
           VITE_API_URL: ${{ vars.API_URL }}
