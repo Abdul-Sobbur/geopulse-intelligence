@@ -1,9 +1,10 @@
 """Database connection for the API. Settings come from the project-root .env file."""
 import os
+import socket
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import URL
 
 # backend/app/db.py -> parents[2] is the project root, where .env lives
@@ -29,3 +30,27 @@ else:
         ),
         pool_pre_ping=True,  # quietly reconnect if the database connection dropped
     )
+
+
+def prefer_ipv4(cparams: dict) -> None:
+    """Connect to the host's IPv4 address when it has one.
+
+    Some hosts (Render's free tier, for example) cannot reach IPv6, but a database host may resolve to
+    IPv6 first. Setting hostaddr makes libpq connect to the IPv4 address while still using the host
+    name for TLS (SNI and certificate checks), which managed services such as Neon need.
+    """
+    host = cparams.get("host")
+    if not host or host in ("localhost",) or cparams.get("hostaddr"):
+        return
+    try:
+        infos = socket.getaddrinfo(host, cparams.get("port") or 5432, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        return  # no IPv4 address found: let libpq try whatever the host resolves to
+    if infos:
+        cparams["hostaddr"] = infos[0][4][0]
+
+
+if not os.environ.get("GEOPULSE_TEST_NO_DB"):
+    @event.listens_for(engine, "do_connect")
+    def _connect_over_ipv4(dialect, conn_rec, cargs, cparams):
+        prefer_ipv4(cparams)
